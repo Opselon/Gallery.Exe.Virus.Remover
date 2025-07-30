@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/i-am-aka/readme-assets/main/gallery-exe-ultra-lock-banner.png" alt="Gallery.exe Ultra-Lock Banner" width="600"/>
-</p>
 
 <h1 align="center">🛡️ Gallery.exe Ultra-Lock — Pro Version</h1>
 
