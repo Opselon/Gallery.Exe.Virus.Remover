@@ -94,17 +94,17 @@ This project includes a Python wrapper for easier use.
 
 You can use the Python wrapper to install, remove, or check the status of the Gallery-Lock decoys.
 
-*   **Install:**
+*   **Using Python directly:**
     ```bash
     python3 -m gallery_lock install
-    ```
-*   **Remove:**
-    ```bash
     python3 -m gallery_lock remove
-    ```
-*   **Check Status:**
-    ```bash
     python3 -m gallery_lock status
+    ```
+*   **Using Batch or CMD:**
+    ```bash
+    run.bat install
+    run.cmd remove
+    run.bat status
     ```
 
 <details>
