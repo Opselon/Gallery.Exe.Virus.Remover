@@ -98,7 +98,29 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 ---
 
+## 🛡️ How This Script Provides Permanent Protection from Gallery.exe Virus
+
+This script is designed to **permanently block the Gallery.exe virus** from ever infecting your system again. Here’s how it works:
+
+- **Deletes all existing Gallery.exe files** in both user and system profile locations, removing any active infection.
+- **Creates a zero-byte decoy file** named `Gallery.exe` in the exact locations malware targets.
+- **Applies unbreakable NTFS permissions** so that:
+  - No user, not even Administrators, can delete, overwrite, or modify the decoy file.
+  - Only the SYSTEM account (or TrustedInstaller, if configured) can manage the file, and only with explicit permission changes.
+- **Removes all inherited permissions** so that no parent folder or group policy can accidentally restore access.
+- **Sets the file as Hidden and System**, making it invisible to most users and malware scripts.
+- **Any future attempt by malware to drop or run Gallery.exe will fail** because the file cannot be replaced, deleted, or executed.
+
+### 🔒 Why is this Permanent?
+
+- **Malware cannot overwrite or remove the decoy file** without first taking ownership and resetting permissions—a process that requires SYSTEM-level access and manual intervention.
+- **Even if malware runs as Administrator, it will be blocked** by the Deny rules and lack of ownership.
+- **The script can be re-run at any time** to re-harden the file if you suspect tampering.
+
+> **Result:**  
+> As long as the decoy file remains in place, your PC is immune to any Gallery.exe-based reinfection attempts.  
+> This is a proven, advanced endpoint hardening technique used by
+
 ## 📜 License
 
 Open-source and free to use. Share, fork, and modify — responsibly!
-
