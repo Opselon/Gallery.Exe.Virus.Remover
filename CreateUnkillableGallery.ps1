@@ -64,21 +64,32 @@ function Lock-File {
 
         # Set owner to TrustedInstaller (requires running as admin)
         $trustedInstaller = "NT SERVICE\TrustedInstaller"
-        $takeownCmd = "powershell -Command `"& { \$file = Get-Item '$GalleryPath'; \$acl = Get-Acl \$file; \$acl.SetOwner([System.Security.Principal.NTAccount]'$trustedInstaller'); Set-Acl \$file \$acl }`""
-        cmd.exe /c $takeownCmd | Out-Null
+        $file = Get-Item $GalleryPath
+        $acl = Get-Acl $file.FullName
+        $acl.SetOwner([System.Security.Principal.NTAccount]$trustedInstaller)
+        Set-Acl -Path $file.FullName -AclObject $acl
+        $acl.SetOwner($trustedInstaller)
+        Log "Resetting permissions and removing inheritance..."
+        $acl = Get-Acl $GalleryPath
+        $acl.SetAccessRuleProtection($true, $false) # Disable inheritance, remove inherited rules
 
-        Log "Resetting permissions..."
-        icacls.exe $GalleryPath /reset | Out-Null
+        Log "Removing all existing access rules..."
+        $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) }
 
-        Log "Removing inherited permissions..."
-        icacls.exe $GalleryPath /inheritance:r | Out-Null
+        Log "Granting full control to TrustedInstaller only..."
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("NT SERVICE\TrustedInstaller", "FullControl", "Allow")
+        $acl.AddAccessRule($rule)
+        Set-Acl -Path $GalleryPath -AclObject $acl
 
-        Log "Removing all permissions except TrustedInstaller..."
-        icacls.exe $GalleryPath /grant `"NT SERVICE\TrustedInstaller:(F)`" | Out-Null
-        icacls.exe $GalleryPath /remove:g Everyone SYSTEM Administrators Users | Out-Null
+        Log "Validating Gallery.exe path before setting attributes..."
+        if (-not (Test-Path $GalleryPath -PathType Leaf)) {
+            throw "Gallery.exe path is invalid or does not exist: $GalleryPath"
+        }
 
-        Log "Setting file as read-only and hidden..."
-        attrib +R +H $GalleryPath
+        Log "Setting file as read-only and hidden using Set-ItemProperty..."
+        Set-ItemProperty -Path $GalleryPath -Name Attributes -Value ([System.IO.FileAttributes]::ReadOnly -bor [System.IO.FileAttributes]::Hidden)
+
+        Log "Applying NTFS lock completed successfully. Only TrustedInstaller can remove the file."
 
         Log "Applying NTFS lock completed successfully. Only TrustedInstaller can remove the file."
     } catch {
