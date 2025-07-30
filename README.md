@@ -1,126 +1,130 @@
-# 🛡️ Gallery.exe Ultra-Lock — Pro Version
+<p align="center">
+  <img src="https://raw.githubusercontent.com/i-am-aka/readme-assets/main/gallery-exe-ultra-lock-banner.png" alt="Gallery.exe Ultra-Lock Banner" width="600"/>
+</p>
 
-A PowerShell script to create **indestructible decoy files** (`Gallery.exe`) in both user and system locations, using advanced NTFS and ACL tricks. Block malware reinfection and keep your system clean!
+<h1 align="center">🛡️ Gallery.exe Ultra-Lock — Pro Version</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/PowerShell-5.1+-blue.svg" alt="PowerShell Version">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Status-Active-brightgreen.svg" alt="Status">
+</p>
+
+<p align="center">
+  A powerful PowerShell script that creates <strong>indestructible decoy files</strong> to block malware reinfection and keep your system clean.
+</p>
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Deletes old Gallery.exe** in both user and systemprofile locations
-- **Creates zero-byte decoy files** at:
+- **Deletes Existing Threats**: Automatically removes old `Gallery.exe` files from both user and system locations.
+- **Creates Decoy Files**: Generates zero-byte decoy files in common malware target directories:
   - `%APPDATA%\Gallery.exe` (User)
   - `C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe` (System)
-- **Applies hardcore ACLs:**
-  - ❌ Deny Everyone (even Admins) all access
-  - ✅ Allow only SYSTEM (or TrustedInstaller, if you choose) full control
-  - 🔒 Removes inherited permissions
-- **Sets Hidden + System attributes** (invisible to Explorer)
-- **Colorized logging** and clear status output
-- **Open-source, no dependencies**
+- **Advanced ACL Hardening**:
+  -  DENIES all access to `Everyone` (including Administrators).
+  - GRANTS full control exclusively to `SYSTEM` or `TrustedInstaller`.
+  - BLOCKS inherited permissions to prevent unauthorized changes.
+- **Stealthy & Invisible**: Sets files as `Hidden` and `System` attributes, making them invisible in standard File Explorer views.
+- **User-Friendly Logging**: Provides clear, color-coded status updates for every action.
+- **Zero Dependencies**: A standalone, open-source PowerShell script.
 
 ---
 
-## 🛠️ Usage
+## 🛠️ How to Use
 
-### 1. Run as SYSTEM (Recommended for full protection)
+### 1. Run as SYSTEM (Recommended for Maximum Protection)
 
-> **Tip:** Use [PsExec](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) to launch PowerShell as SYSTEM:
+For the script to apply the most robust security settings, it needs to run with `SYSTEM` privileges. The easiest way to achieve this is by using the **PsExec** tool from the official Windows Sysinternals suite.
 
-```cmd
-.\PsExec64.exe -i -s powershell.exe
-```
+> **Tip:** Download [PsExec](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) and extract it to a known location.
 
-In the new SYSTEM PowerShell window:
+1. **Open an Administrator Command Prompt or PowerShell window.**
+2. **Navigate to the directory where you extracted `PsExec64.exe`.**
+3. **Launch a new PowerShell instance as the SYSTEM user:**
 
+   ```cmd
+   .\PsExec64.exe -i -s powershell.exe
+   ```
+
+4. **In the new SYSTEM PowerShell window, run the script:**
+   *First, you may need to bypass the execution policy for the current process.*
+   ```powershell
+   Set-ExecutionPolicy Bypass -Scope Process -Force
+   .\CreateUnkillableGallery.ps1
+   ```
+
+---
+
+### 📁 Protected File Locations
+
+| Profile Type     | Path                                                                 |
+|------------------|----------------------------------------------------------------------|
+| **User Profile** | `%APPDATA%\Gallery.exe`                                              |
+| **System Profile** | `C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe` |
+
+---
+
+## 🧱 How It Works: The Security Breakdown
+
+This script provides a permanent, set-and-forget solution to prevent the `Gallery.exe` virus from reinfecting your system.
+
+- **Proactive Deletion**: It starts by cleaning up any existing instances of the malware.
+- **Decoy Placement**: It creates harmless, empty files in the exact locations the malware tries to infect.
+- **Unbreakable Permissions**: By using Access Control Lists (ACLs), it builds a digital fortress around these decoy files.
+  - No user, not even an Administrator, can modify, delete, or overwrite the file.
+  - Only the highest-level system accounts (`SYSTEM` or `TrustedInstaller`) have control.
+- **Isolation**: By removing inherited permissions, the file's security is self-contained and cannot be weakened by changes to parent folders.
+- **Invisibility**: The `Hidden` and `System` attributes ensure that the decoy files are not accidentally discovered or tampered with.
+
+The result is a permanent roadblock. Any future attempt by malware to create or modify `Gallery.exe` will be denied by the operating system at a fundamental level.
+
+---
+
+## ⚠️ Important Warnings
+
+- **For Decoy Files Only!** Do not use this script on critical system files or applications. It is designed specifically for blocking malware with known filenames.
+- **Admin Lockout**: Administrators cannot delete or modify these files without manually taking ownership and resetting permissions first.
+
+### To Remove or Edit a Locked File
+
+If you ever need to remove the decoy files, you must perform these steps as an Administrator:
+
+1.  **Take Ownership of the file:**
+    ```cmd
+    takeown /f "C:\Path\To\Your\Gallery.exe"
+    ```
+2.  **Reset the file's permissions to inherit from the parent folder:**
+    ```cmd
+    icacls "C:\Path\To\Your\Gallery.exe" /reset
+    ```
+
+---
+
+## 💣 Optional: Extreme Hardening
+
+For an even higher level of protection, you can lock the file in memory. This creates an open handle to the file, which can prevent even some SYSTEM-level processes from deleting it.
+
+Execute this in a PowerShell window that will remain open:
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-.\CreateUnkillableGallery.ps1
+$fs = [System.IO.File]::Open("$env:APPDATA\Gallery.exe", 'Open', 'Read', 'Read')
 ```
-
----
-
-### 📁 File Locations
-
-| Location        | Path                                                                 |
-|-----------------|----------------------------------------------------------------------|
-| User Profile    | `%APPDATA%\Gallery.exe`                                              |
-| System Profile  | `C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe` |
-
----
-
-### 🧱 Security Details
-
-| Feature             | Description                                                      |
-|---------------------|------------------------------------------------------------------|
-| 🔒 ACL Lock         | Denies all access to Everyone, even Admins                       |
-| ✅ SYSTEM-only      | Only `NT AUTHORITY\SYSTEM` (or TrustedInstaller) can manage file |
-| 🚫 No Inheritance   | No inherited permissions from parent folders                     |
-| 🧙 Hidden + System  | File is invisible in Explorer by default                         |
-
----
-
-## ⚠️ Warnings
-
-- **Do NOT lock critical system or app files!**  
-  This script is for decoy/fake files only.
-- **Even Admins cannot delete or change these files** without taking ownership and resetting ACLs.
-
-### To Remove or Edit the File
-
-1. **Take ownership:**
-   ```cmd
-   takeown /f "C:\Path\To\Gallery.exe"
-   ```
-2. **Reset permissions:**
-   ```cmd
-   icacls "C:\Path\To\Gallery.exe" /reset
-   ```
-
----
-
-## 💣 Optional: Extra Hardening
-
-- **Keep file locked in memory:**  
-  Open a handle to the file to block deletion, even by SYSTEM:
-  ```powershell
-  $fs = [System.IO.File]::Open("$env:APPDATA\Gallery.exe", 'Open', 'Read', 'Read')
-  ```
+**Note:** This lock is temporary and only lasts as long as the PowerShell session is active.
 
 ---
 
 ## 🔎 Troubleshooting
 
-| Problem                        | Solution                                              |
-|---------------------------------|------------------------------------------------------|
-| ❌ “Access Denied” on Set-Acl   | Run script as SYSTEM using PsExec                    |
-| 🪟 File doesn’t show up         | Enable viewing hidden/system files in Explorer        |
-| 💥 Can't delete                 | Use `takeown` and `icacls` as shown above            |
+| Problem                             | Solution                                                                                                   |
+|-------------------------------------|------------------------------------------------------------------------------------------------------------|
+| ❌ **"Access Denied" on `Set-Acl`** | This is expected if not running as SYSTEM. Use **PsExec** as described in the usage section for full access. |
+| 🪟 **File doesn't appear**          | The file is hidden by default. In File Explorer, go to `View > Options > View` and select "Show hidden files, folders, and drives" and uncheck "Hide protected operating system files". |
+| 💥 **Cannot delete the file**      | This is the intended behavior! To remove it, follow the steps in the **"To Remove or Edit a Locked File"** section. |
 
 ---
 
-## 🛡️ How This Script Provides Permanent Protection from Gallery.exe Virus
-
-This script is designed to **permanently block the Gallery.exe virus** from ever infecting your system again. Here’s how it works:
-
-- **Deletes all existing Gallery.exe files** in both user and system profile locations, removing any active infection.
-- **Creates a zero-byte decoy file** named `Gallery.exe` in the exact locations malware targets.
-- **Applies unbreakable NTFS permissions** so that:
-  - No user, not even Administrators, can delete, overwrite, or modify the decoy file.
-  - Only the SYSTEM account (or TrustedInstaller, if configured) can manage the file, and only with explicit permission changes.
-- **Removes all inherited permissions** so that no parent folder or group policy can accidentally restore access.
-- **Sets the file as Hidden and System**, making it invisible to most users and malware scripts.
-- **Any future attempt by malware to drop or run Gallery.exe will fail** because the file cannot be replaced, deleted, or executed.
-
-### 🔒 Why is this Permanent?
-
-- **Malware cannot overwrite or remove the decoy file** without first taking ownership and resetting permissions—a process that requires SYSTEM-level access and manual intervention.
-- **Even if malware runs as Administrator, it will be blocked** by the Deny rules and lack of ownership.
-- **The script can be re-run at any time** to re-harden the file if you suspect tampering.
-
-> **Result:**  
-> As long as the decoy file remains in place, your PC is immune to any Gallery.exe-based reinfection attempts.  
-> This is a proven, advanced endpoint hardening technique used by
-
 ## 📜 License
 
-Open-source and free to use. Share, fork, and modify — responsibly!
+This project is open-source and available under the [MIT License](https://github.com/i-am-aka/readme-assets/blob/main/LICENSE). Feel free to share, fork, and modify it responsibly.
