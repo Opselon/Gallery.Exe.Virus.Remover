@@ -78,6 +78,35 @@ This is the **most secure method** and guarantees the script can apply its stron
 
 **That's it!** The decoy files are now in place and hardened. You can close all windows.
 
+### How to Use with Python
+
+This project includes a Python wrapper for easier use.
+
+#### Installation
+
+1.  **Ensure you have Python 3 installed.**
+2.  **Install the required dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+#### Usage
+
+You can use the Python wrapper to install, remove, or check the status of the Gallery-Lock decoys.
+
+*   **Install:**
+    ```bash
+    python3 -m gallery_lock install
+    ```
+*   **Remove:**
+    ```bash
+    python3 -m gallery_lock remove
+    ```
+*   **Check Status:**
+    ```bash
+    python3 -m gallery_lock status
+    ```
+
 <details>
   <summary><strong>Alternative Method: Run as Administrator (Less Secure)</strong></summary>
 
