@@ -1,65 +1,54 @@
-# 🛡️ Gallery.exe Lockdown Script
+# Gallery.Exe Virus Remover — Pro Version
 
-## Overview
+## 🛡️ What is this?
 
-This PowerShell project is designed to **neutralize a known malware vector** — `Gallery.exe` — by **preemptively creating and locking** a benign file at the targeted execution path. This technique is effective for preventing re-creation of the file by malware or unauthorized users, even with elevated privileges.
-
-The script employs **NTFS permission hardening, ownership obfuscation**, and **access control denial** to make the file tamper-resistant and virtually unremovable under normal circumstances.
+**Gallery.Exe Virus Remover (Pro Version)** is a PowerShell script that creates a hardened, zero-byte `Gallery.exe` file in your `%APPDATA%` folder. It then locks the file so that only the Windows TrustedInstaller account can delete or modify it. This prevents most malware from reinfecting your system with a malicious `Gallery.exe`.
 
 ---
 
-## 🎯 Use Case
+## 🚀 Pro Features
 
-Malware families such as `Win32/Delf.QJF` and others often attempt to drop or hijack `Gallery.exe` within sensitive user or system directories, especially:
-
-- `%APPDATA%\Gallery.exe`
-- `C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe`
-
-This script defends those vectors by creating a **zero-byte decoy** `Gallery.exe` and locking it at the filesystem level.
-
----
-
-## ✅ Features
-
-- Creates decoy executable at common malware target locations
-- Applies non-reversible ACL rules preventing:
-  - File deletion
-  - Modification or overwrite
-  - Execution by unauthorized users
-- Restricts all accounts including:
-  - `Administrators`
-  - `SYSTEM`
-  - `TrustedInstaller`
-- Can optionally remove an existing file and replace it with a hardened version
+- **Zero-byte decoy:** Creates a dummy `Gallery.exe` to block malware.
+- **TrustedInstaller lock:** Only TrustedInstaller can remove or change the file.
+- **Colorized output:** Console messages are color-coded for easy reading.
+- **Comprehensive logging:** All actions are logged to your desktop.
+- **Process killer:** Terminates any running `Gallery.exe` before hardening.
+- **NTFS hardening:** Removes all permissions except TrustedInstaller.
+- **Easy to use:** Just run as Administrator and you're protected.
 
 ---
 
-## 🔐 Technical Details
+## 📝 Usage
 
-- Ownership is reassigned using `takeown.exe`
-- NTFS ACLs are reset using `icacls.exe`
-- Write, delete, and change permissions are removed
-- Deny permissions override allow rules
-- Execution context is elevated to `NT AUTHORITY\SYSTEM` using Sysinternals PsExec
-
----
-
-## 🧰 Prerequisites
-
-| Component       | Requirement                          |
-|----------------|--------------------------------------|
-| OS              | Windows 10 / 11 / Server 2016+       |
-| PowerShell      | 5.1 or newer                          |
-| PsExec          | Sysinternals PsExec (64-bit)         |
-| Access Level    | Administrator privileges             |
-
----
-
-## 🚀 Usage Instructions
-
-1. Download [PsExec](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) and place it in a known directory.
-2. Open PowerShell **as Administrator**.
-3. Launch elevated PowerShell as `SYSTEM`:
+1. **Open PowerShell as Administrator.**
+2. **Run the script:**
    ```powershell
-   cd "C:\Path\To\PSTools"
-   .\PsExec64.exe -accepteula -i -s powershell.exe
+   .\CreateUnkillableGallery.ps1
+   ```
+3. **Check the log:**  
+   See `gallery_lock.log` on your Desktop for a full activity log.
+
+---
+
+## ⚠️ Requirements
+
+- Windows 10/11
+- PowerShell 5.1+
+- Must be run as Administrator
+
+---
+
+## ❓ FAQ
+
+**Q: Can I delete the dummy file?**  
+A: Only if you take ownership as TrustedInstaller or manually reset permissions as an admin.
+
+**Q: Why TrustedInstaller?**  
+A: Most malware runs as SYSTEM or Administrator, but not as TrustedInstaller. This makes the file nearly impossible for malware to remove.
+
+---
+
+## 🏆 Credits
+
+- Inspired by Windows hardening best practices.
+- Script by [Your Name]
