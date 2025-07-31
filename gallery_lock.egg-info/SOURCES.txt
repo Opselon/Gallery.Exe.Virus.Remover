@@ -1,0 +1,9 @@
+README.md
+setup.py
+gallery_lock.egg-info/PKG-INFO
+gallery_lock.egg-info/SOURCES.txt
+gallery_lock.egg-info/dependency_links.txt
+gallery_lock.egg-info/entry_points.txt
+gallery_lock.egg-info/top_level.txt
+tests/test_cli.py
+tests/test_gallery_lock.py
