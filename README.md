@@ -197,3 +197,71 @@ If you ever need to remove the decoys, you must manually reverse the protection 
 ## 📜 License
 
 This project is open-source and distributed under the [MIT License](https://github.com/i-am-aka/readme-assets/blob/main/LICENSE). You are free to use, share, and modify it.
+
+---
+
+## 🐍 SafeRemover - Python Malware Scanner
+
+**SafeRemover.py** is a cautious, interactive Python script designed to scan for and neutralize a wider range of threats beyond just `Gallery.exe`. It uses a customizable JSON database for threat signatures and prioritizes user safety with a multi-tiered approach.
+
+### ✨ Key Features
+
+| Feature | Description |
+| :--- | :--- |
+| 🛡️ **Signature-Based Scanning** | Uses a human-readable `threat_database.json` to detect threats by filename, file size, or SHA256 hash. |
+| 🕵️ **Comprehensive Scan** | Scans common malware locations, including AppData folders, Temp folders, user Startup folders, and persistence vectors like Registry Run keys and Scheduled Tasks. |
+| 🚫 **Read-Only Default Mode** | The default `--scan` mode is strictly read-only and makes **no changes** to your system. It only reports what it finds. |
+| ✅ **Interactive Cleaning** | The `--clean` mode requires user confirmation for **every single action**. Nothing is removed or changed automatically. |
+| 📦 **Safe Quarantine** | Files are moved to a secure quarantine folder (`C:\SafeRemover\Quarantine`), not permanently deleted. |
+| 📜 **Registry Backups** | Before removing a suspicious registry key, the script automatically backs up the parent key to a `.reg` file for easy restoration. |
+| ✍️ **Detailed Logging** | All actions (scans, findings, user approvals, errors) are recorded in `SafeRemover_Activity.log` for a full audit trail. |
+
+### 🛠️ How to Use
+
+The script is run from the command line (Terminal or PowerShell).
+
+1.  **Open a Terminal:**
+    *   Open your preferred terminal (e.g., `cmd.exe`, `powershell.exe`, or Windows Terminal).
+    *   Navigate to the directory where `SafeRemover.py` is located.
+
+2.  **To Perform a Read-Only Scan:**
+    *   This command will scan the system and report findings without making any changes.
+    ```bash
+    python SafeRemover.py --scan
+    ```
+    *(Note: `--scan` is the default action, so you can also just run `python SafeRemover.py`)*
+
+3.  **To Perform an Interactive Clean:**
+    *   This command requires **Administrator privileges**. Right-click your terminal application and select "Run as administrator".
+    *   The script will scan for threats and then prompt you one-by-one to approve or deny each action.
+    ```bash
+    python SafeRemover.py --clean
+    ```
+
+### ⚙️ The Threat Database
+
+The tool's power comes from the `threat_database.json` file. You can easily add your own threat definitions.
+
+*   **File-based threats:**
+    ```json
+    {
+      "name": "ExampleThreat.exe",
+      "type": "file",
+      "signatures": {
+        "filenames": ["ExampleThreat.exe", "evil.exe"],
+        "hashes": ["sha256_hash_goes_here"],
+        "file_sizes": [12345]
+      }
+    }
+    ```
+*   **Registry-based threats:**
+    ```json
+    {
+      "name": "Suspicious Run Key",
+      "type": "registry",
+      "signatures": {
+        "value_patterns": ["C:\\Users\\.*\\AppData\\Roaming\\evil.exe"]
+      }
+    }
+    ```
+    The `value_patterns` field uses regular expressions to match suspicious paths in registry values.
