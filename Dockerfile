@@ -1,11 +1,8 @@
-# Use an official Python runtime as a parent image for Windows
-FROM python:3.10-windowsservercore
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim
 
 # Set the working directory in the container
 WORKDIR /app
-
-# Set the default shell to PowerShell
-SHELL ["powershell", "-Command"]
 
 # Copy the requirements file and install dependencies
 COPY requirements.txt .
