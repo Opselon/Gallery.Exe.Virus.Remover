@@ -1,16 +1,26 @@
+import ctypes
 import os
 import subprocess
 import sys
-from colorama import Fore, Style, init
+from rich.console import Console
 
-init(autoreset=True)
+console = Console()
+
+def is_admin():
+    """
+    Checks if the script is running with administrative privileges.
+    """
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
 
 def run_powershell_script(script_path):
     """
     Runs a PowerShell script.
     """
     if not os.path.exists(script_path):
-        print(Fore.RED + f"Error: The script '{script_path}' was not found.")
+        console.print(f"[bold red]Error: The script '{script_path}' was not found.[/bold red]")
         sys.exit(1)
 
     try:
@@ -21,43 +31,57 @@ def run_powershell_script(script_path):
             text=True,
         )
     except subprocess.CalledProcessError as e:
-        print(Fore.RED + f"An error occurred while running the PowerShell script: {e}")
-        print(Fore.RED + e.stderr)
+        console.print(f"[bold red]An error occurred while running the PowerShell script: {e}[/bold red]")
+        console.print(f"[bold red]{e.stderr}[/bold red]")
         sys.exit(1)
     except FileNotFoundError:
-        print(Fore.RED + "Error: PowerShell is not installed or not in the system's PATH.")
+        console.print("[bold red]Error: PowerShell is not installed or not in the system's PATH.[/bold red]")
         sys.exit(1)
+
+from rich.progress import Progress
 
 def install():
     """
     Installs the Gallery-Lock decoys.
     """
-    print(Fore.CYAN + "Installing Gallery-Lock decoys...")
-    run_powershell_script(os.path.join("scripts", "gallery_lock.ps1"))
-    print(Fore.GREEN + "Installation complete.")
+    if not is_admin():
+        console.print("[bold red]This action requires administrator privileges.[/bold red]")
+        sys.exit(1)
+    console.print("[bold cyan]Installing Gallery-Lock decoys...[/bold cyan]")
+    with Progress() as progress:
+        task = progress.add_task("[green]Installing...", total=1)
+        run_powershell_script(os.path.join("scripts", "gallery_lock.ps1"))
+        progress.update(task, advance=1)
+    console.print("[bold green]Installation complete.[/bold green]")
 
 def remove():
     """
     Removes the Gallery-Lock decoys.
     """
-    print(Fore.CYAN + "Removing Gallery-Lock decoys...")
-    run_powershell_script(os.path.join("scripts", "remove_gallery_lock.ps1"))
-    print(Fore.GREEN + "Removal complete.")
+    if not is_admin():
+        console.print("[bold red]This action requires administrator privileges.[/bold red]")
+        sys.exit(1)
+    console.print("[bold cyan]Removing Gallery-Lock decoys...[/bold cyan]")
+    with Progress() as progress:
+        task = progress.add_task("[green]Removing...", total=1)
+        run_powershell_script(os.path.join("scripts", "remove_gallery_lock.ps1"))
+        progress.update(task, advance=1)
+    console.print("[bold green]Removal complete.[/bold green]")
 
 def check_status():
     """
     Checks the status of the Gallery-Lock decoys.
     """
-    print(Fore.CYAN + "Checking Gallery-Lock status...")
+    console.print("[bold cyan]Checking Gallery-Lock status...[/bold cyan]")
     user_file = os.path.expandvars(r"%APPDATA%\Gallery.exe")
     system_file = r"C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe"
 
     if os.path.exists(user_file):
-        print(Fore.GREEN + "User decoy: INSTALLED")
+        console.print("[bold green]User decoy: INSTALLED[/bold green]")
     else:
-        print(Fore.YELLOW + "User decoy: NOT INSTALLED")
+        console.print("[bold yellow]User decoy: NOT INSTALLED[/bold yellow]")
 
     if os.path.exists(system_file):
-        print(Fore.GREEN + "System decoy: INSTALLED")
+        console.print("[bold green]System decoy: INSTALLED[/bold green]")
     else:
-        print(Fore.YELLOW + "System decoy: NOT INSTALLED")
+        console.print("[bold yellow]System decoy: NOT INSTALLED[/bold yellow]")
