@@ -1,5 +1,9 @@
 README.md
 setup.py
+gallery_lock/__init__.py
+gallery_lock/__main__.py
+gallery_lock/cli.py
+gallery_lock/core.py
 gallery_lock.egg-info/PKG-INFO
 gallery_lock.egg-info/SOURCES.txt
 gallery_lock.egg-info/dependency_links.txt
