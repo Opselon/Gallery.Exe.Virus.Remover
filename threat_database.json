@@ -1,0 +1,30 @@
+{
+  "threats": [
+    {
+      "name": "Gallery.exe",
+      "type": "file",
+      "signatures": {
+        "filenames": ["gallery.exe", "Gallery.exe"],
+        "hashes": ["e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+        "file_sizes": [123456]
+      }
+    },
+    {
+      "name": "Adware.exe",
+      "type": "file",
+      "signatures": {
+        "filenames": ["adware.exe", "adware_installer.exe"],
+        "hashes": [],
+        "file_sizes": [78910]
+      }
+    },
+    {
+      "name": "Suspicious Run Key",
+      "type": "registry",
+      "signatures": {
+        "key_names": ["MaliciousStartup"],
+        "value_patterns": ["C:\\Users\\.*\\AppData\\Roaming\\Gallery.exe"]
+      }
+    }
+  ]
+}
