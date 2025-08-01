@@ -19,7 +19,7 @@
 .NOTES
     Author: Opselon (github.com/Opselon)
     Upgraded by: Jules & Gemini
-    Version: 4.0
+    Version: 5.0
 #>
 
 #================================================================================
@@ -51,7 +51,7 @@ function Show-Header {
 
     Write-Host "
     ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           Gallery.exe Malware Decoy Tool v4.0          " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           Gallery.exe Malware Decoy Tool v5.0          " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "                       by " -ForegroundColor $textColor; Write-Host "Opselon" -ForegroundColor $authorColor; Write-Host "                          ║" -ForegroundColor $borderColor
     Write-Host "    ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script creates locked decoy files to block known    " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
@@ -83,9 +83,12 @@ function Lock-FileUltraSecure {
         [Parameter(Mandatory=$true)] [string]$Description
     )
 
-    Write-Host "🔹" -ForegroundColor "Cyan" -NoNewline; Write-Host " Processing: $Description" -ForegroundColor "White"
-    $result = [PSCustomObject]@{ Path = $TargetPath; Success = $false; Message = "" }
-    $indent = "   "
+    $result = [PSCustomObject]@{
+        Path = $TargetPath
+        Description = $Description
+        Success = $false
+        Message = ""
+    }
 
     try {
         # --- Pre-flight Checks ---
@@ -93,13 +96,11 @@ function Lock-FileUltraSecure {
         if ($drive.FileSystem -ne 'NTFS') { throw "Target path is not on an NTFS drive. ACLs cannot be applied." }
         $parentDir = Split-Path $TargetPath -Parent
         if (-not (Test-Path $parentDir)) {
-            Write-Host "$indent[i] Parent directory not found. Creating..." -ForegroundColor "Gray"
             New-Item -ItemType Directory -Path $parentDir -Force -ErrorAction Stop | Out-Null
         }
 
         # --- Delete Pre-existing File ---
         if (Test-Path $TargetPath -PathType Leaf) {
-            Write-Host "$indent[i] File exists. Attempting to forcefully remove..." -ForegroundColor "Gray"
             takeown /f $TargetPath /a | Out-Null
             icacls $TargetPath /reset /t /c /q | Out-Null
             Remove-Item -Path $TargetPath -Force -ErrorAction Stop
@@ -107,15 +108,12 @@ function Lock-FileUltraSecure {
 
         # --- Create Decoy and Apply Security ---
         New-Item -ItemType File -Path $TargetPath -Force -ErrorAction Stop | Out-Null
-        Write-Host "$indent[✓] Created 0-byte decoy file." -ForegroundColor "Green"
         Set-ItemProperty -Path $TargetPath -Name Attributes -Value ([System.IO.FileAttributes]::Hidden, [System.IO.FileAttributes]::System) -Force -ErrorAction Stop
-        Write-Host "$indent[✓] Set attributes to Hidden + System." -ForegroundColor "Green"
         $acl = New-Object System.Security.AccessControl.FileSecurity
         $acl.SetAccessRuleProtection($true, $false)
         $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Everyone", "FullControl", "Deny")))
         $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM", "FullControl", "Allow")))
         Set-Acl -Path $TargetPath -AclObject $acl -ErrorAction Stop
-        Write-Host "$indent[✓] Hardened file ACLs." -ForegroundColor "Green"
 
     } catch {
         $result.Message = "FAIL: $($_.Exception.Message)"
@@ -126,14 +124,14 @@ function Lock-FileUltraSecure {
     if (Test-Path $TargetPath -PathType Leaf) {
         if ((Get-Item -Path $TargetPath -Force).Length -eq 0) {
             $result.Success = $true
-            $result.Message = "SUCCESS: Decoy created and locked."
+            $result.Message = "SUCCESS"
         } else {
             $result.Message = "FAIL: Verification failed. File is not empty."
         }
     } else {
-        $result.Message = "FAIL: File disappeared. LIKELY AN ANTIVIRUS. Add path to AV exclusion list and re-run."
+        $result.Message = "FAIL: File disappeared. LIKELY AN ANTIVIRUS."
     }
-    Write-Host ""
+    
     return $result
 }
 
@@ -156,30 +154,34 @@ Write-SectionHeader -Title "Applying Decoy Files"
 
 $allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 $processedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$totalTargets = $decoyTargets.Count
+$currentTarget = 0
 
 foreach ($target in $decoyTargets) {
+    $currentTarget++
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($target.Path)
+    Write-Progress -Activity "Applying Decoy Files" -Status "Processing: $($target.Description)" -PercentComplete (($currentTarget / $totalTargets) * 100)
+    
     if ($processedPaths.Add($resolvedPath)) {
         $result = Lock-FileUltraSecure -TargetPath $resolvedPath -Description $target.Description
         $allResults.Add($result)
     }
 }
+Write-Progress -Activity "Applying Decoy Files" -Completed
 
 # --- Final Summary ---
 Write-SectionHeader -Title "Execution Summary"
 
-$failedCount = 0
-foreach ($res in $allResults) {
-    if ($res.Success) {
-        Write-Host "  [✓] " -ForegroundColor Green -NoNewline
-        Write-Host "$($res.Message) " -ForegroundColor "Gray" -NoNewline
-    } else {
-        $failedCount++
-        Write-Host "  [✗] " -ForegroundColor Red -NoNewline
-        Write-Host "$($res.Message) " -ForegroundColor "Yellow" -NoNewline
-    }
-    Write-Host "($($res.Path))" -ForegroundColor "DarkGray"
+$ft = @{
+    Expression = { if ($_.Success) { "[✓] SUCCESS" } else { "[✗] FAILURE" } }
+    Label = "Status"
+    Width = 12
+    ForegroundColor = { if ($_.Success) { "Green" } else { "Red" } }
 }
+
+$allResults | Format-Table $ft, Description, Path -AutoSize -Wrap
+
+$failedCount = ($allResults | Where-Object { -not $_.Success }).Count
 
 if ($failedCount -eq 0) {
     Write-Host "`n  [✓] All decoys were created successfully! System is protected." -ForegroundColor "Green"
