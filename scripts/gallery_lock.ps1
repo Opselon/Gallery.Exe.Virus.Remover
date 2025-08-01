@@ -9,30 +9,6 @@
     the "Gallery.exe" malware execution vector. This version is specifically modified to ensure
     full compatibility with Windows PowerShell 5.1.
 
-    The application operates in distinct, user-controlled phases:
-    1. SYSTEM ANALYSIS: Dynamically scans the host machine to identify all user profiles and potential
-       malware drop locations. It provides a complete diagnostic of the target environment.
-    
-    2. VACCINATION & HARDENING: For each identified target path, the system executes a multi-step,
-       atomic operation:
-        - Forceful pre-emptive removal of any existing file or folder, taking ownership if required.
-        - Creation of a zero-byte decoy file.
-        - Application of 'Hidden' and 'System' file attributes to cloak the file.
-        - Total lockdown via a hyper-strict Access Control List (ACL):
-            - Ownership is transferred to the NT AUTHORITY\SYSTEM account.
-            - All permission inheritance is severed.
-            - An explicit 'Deny FullControl' rule is applied to the 'Everyone' group.
-            - An explicit 'Allow FullControl' rule is granted ONLY to the 'SYSTEM' account.
-
-    3. POST-OP VERIFICATION: After vaccination, a deep verification scan is initiated to programmatically
-       confirm that every single security measure on every decoy file has been correctly applied.
-
-    4. SYSTEM CLEANUP: A complete rollback feature that safely discovers and removes all decoys
-       created by this tool, restoring the system to its pre-vaccination state.
-
-    All operations are logged in real-time to a rich-text display within the application UI and
-    to a persistent log file for forensic review.
-
 .NOTES
     Author:      Jules & Gemini
     Version:     5.1 "Titan" (PS 5.1 Compatible)
@@ -364,15 +340,13 @@ function Invoke-DecoyOperation {
 
     $summaryMessage = "$Mode operation complete. Total: $total, Success: $($total - $failures), Failures: $failures."
     
-    # ==================== THIS IS THE FIX ====================
-    # Replaced the ternary operator (? :) with a standard if/else block for PS 5.1 compatibility.
+    # This is the corrected block for PS 5.1 compatibility
     if ($failures -eq 0) {
         Add-Log -Level "SUCCESS" -Message "===== $summaryMessage ====="
     }
     else {
         Add-Log -Level "WARN" -Message "===== $summaryMessage ====="
     }
-    # ================= END OF FIX ============================
 
     Update-Status $summaryMessage
     Lock-UI -IsLocked $false
