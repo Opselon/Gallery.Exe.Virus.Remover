@@ -16,6 +16,11 @@ try:
 except ImportError:
     winreg = None
 try:
+
+    import ctypes
+except ImportError:
+    ctypes = None
+try:
     import csv
 except ImportError:
     csv = None
