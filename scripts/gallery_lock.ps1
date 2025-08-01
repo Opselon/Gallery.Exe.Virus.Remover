@@ -2,28 +2,34 @@
 
 <#
 .SYNOPSIS
-    Creates ultra-secure, zero-byte decoy files to block "Gallery.exe" malware.
+    Creates ultra-secure, zero-byte decoy files to block "Gallery.exe" malware, featuring a deep file search and live, persistent logging.
 .DESCRIPTION
-    This script vaccinates a system against malware that creates a "Gallery.exe" file. It works by
-    pre-emptively creating empty, locked-down decoy files in common malware drop locations. This
-    version features a complete UI overhaul, more robust error checking, expanded target locations,
-    and intelligent detection of Antivirus interference.
+    This script vaccinates a system against "Gallery.exe" malware. It first performs a deep search of the C: drive
+    to find and report any existing instances. It then pre-emptively creates empty, locked-down decoy files in
+    common and potential malware drop locations.
 
-    The script performs the following actions for each target path:
-    1. Checks if the destination drive is NTFS (required for ACL security).
-    2. Deletes any pre-existing "Gallery.exe" file, taking ownership if necessary.
-    3. Creates a new, empty (0-byte) file named "Gallery.exe".
-    4. Sets the file attributes to Hidden and System.
-    5. Applies a strict Access Control List (ACL): Denies 'FullControl' to 'Everyone' and allows
-       'FullControl' only for the 'SYSTEM' account, blocking all permission inheritance.
+    All actions are logged in real-time to both the console and a permanent log file stored in C:\ProgramData.
+
+    The script performs the following actions:
+    1.  Initializes a new, timestamped log file for the session.
+    2.  Conducts a deep search for any file named "gallery.exe" on the C: drive, logging all findings.
+    3.  Displays any found locations of "gallery.exe".
+    4.  For each target path:
+        a. Checks if the destination drive is NTFS (required for ACL security).
+        b. Deletes any pre-existing "Gallery.exe" file, taking ownership if necessary.
+        c. Creates a new, empty (0-byte) file named "Gallery.exe".
+        d. Sets the file attributes to Hidden and System.
+        e. Applies a strict Access Control List (ACL): Denies 'FullControl' to 'Everyone' and allows
+           'FullControl' only for the 'SYSTEM' account, blocking all permission inheritance.
+    5.  Provides a final summary on-screen and records all details in the log file for auditing.
 .NOTES
     Author: Opselon (github.com/Opselon)
     Upgraded by: Jules & Gemini
-    Version: 5.0
+    Version: 7.0
 #>
 
 #================================================================================
-# SCRIPT CONFIGURATION
+# SCRIPT CONFIGURATION & LOGGING SETUP
 #================================================================================
 
 # Define the target locations for the decoy files.
@@ -35,12 +41,62 @@ $decoyTargets = @(
     @{ Path = Join-Path $env:TEMP "Gallery.exe"; Description = "User Temp Folder" },
     @{ Path = "C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe"; Description = "System Profile (32-bit)" },
     @{ Path = "C:\Windows\System32\config\systemprofile\AppData\Roaming\Gallery.exe"; Description = "System Profile (64-bit)" },
-    @{ Path = Join-Path $env:windir "Temp\Gallery.exe"; Description = "Windows Temp Folder" }
+    @{ Path = Join-Path $env:windir "Temp\Gallery.exe"; Description = "Windows Temp Folder" },
+    @{ Path = "C:\Program Files\gallery\Gallery.exe"; Description = "Program Files (gallery)" },
+    @{ Path = Join-Path $env:windir "Gallery.exe"; Description = "Windows Directory" }
 )
+
+# --- Professional Logging Setup ---
+$logDirectory = "C:\ProgramData\Opselon\GalleryExeDecoyTool\Logs"
+if (-not (Test-Path -Path $logDirectory)) {
+    New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+}
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$logFile = Join-Path $logDirectory "DecoyLog-$timestamp.log"
+
 
 #================================================================================
 # UI & LOGGING FUNCTIONS
 #================================================================================
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Message,
+
+        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS", "FATAL", "HEADER")]
+        [string]$Level = "INFO",
+
+        [switch]$NoNewLine,
+        [switch]$ToFileOnly
+    )
+
+    $logTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "$logTimestamp [$Level] $Message"
+    Add-Content -Path $logFile -Value $logEntry
+
+    if (-not $ToFileOnly) {
+        $color = switch ($Level) {
+            "SUCCESS" { "Green" }
+            "WARN"    { "Yellow" }
+            "ERROR"   { "Red" }
+            "FATAL"   { "DarkRed" }
+            "HEADER"  { "Cyan" }
+            default   { "Gray" }
+        }
+        
+        $prefix = switch ($Level) {
+            "SUCCESS" { "[✓]" }
+            "WARN"    { "[!]" }
+            "ERROR"   { "[✗]" }
+            "FATAL"   { "[!FATAL!]" }
+            "INFO"    { "[i]" }
+            default   { "" }
+        }
+
+        Write-Host "$prefix $Message" -ForegroundColor $color -NoNewline:$NoNewLine
+    }
+}
 
 function Show-Header {
     Clear-Host
@@ -49,17 +105,21 @@ function Show-Header {
     $textColor = "Gray"
     $authorColor = "Cyan"
 
+    # This part remains visual and is not logged line-by-line.
     Write-Host "
     ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           Gallery.exe Malware Decoy Tool v5.0          " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "         Gallery.exe Malware Decoy Tool v7.0            " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           (Now with Live Professional Logging)           " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "                       by " -ForegroundColor $textColor; Write-Host "Opselon" -ForegroundColor $authorColor; Write-Host "                          ║" -ForegroundColor $borderColor
     Write-Host "    ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script creates locked decoy files to block known    " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  malware execution paths. Administrator rights required.  " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script performs a deep search then creates locked   " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  decoy files to block known malware execution paths.    " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  Administrator rights required.                         " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $borderColor
     Write-Host ""
-    Write-Host " [!]" -ForegroundColor Yellow -NoNewline; Write-Host " Running with Administrator privileges..." -ForegroundColor Gray
-    Write-Host ""
+
+    Write-Log -Message "Log session started. Log file: $logFile" -ToFileOnly
+    Write-Log -Message "Running with Administrator privileges..." -Level "WARN"
 }
 
 function Write-SectionHeader {
@@ -68,14 +128,33 @@ function Write-SectionHeader {
     $titleText = " $Title "
     $paddingLength = [Math]::Floor((56 - $titleText.Length) / 2)
     $padding = "═" * $paddingLength
+    $headerLine = "    ╔$($padding)$($titleText)$($padding)╗"
+    
     Write-Host ""
-    Write-Host "    ╔$($padding)$($titleText)$($padding)╗" -ForegroundColor $borderColor
+    Write-Host $headerLine -ForegroundColor $borderColor
     Write-Host ""
+    Write-Log -Message "================== $Title ==================" -ToFileOnly
 }
 
 #================================================================================
 # CORE SCRIPT FUNCTIONS
 #================================================================================
+
+function Find-GalleryExe {
+    Write-SectionHeader -Title "Deep Scan for Gallery.exe"
+    Write-Log -Message "Starting a deep search for 'gallery.exe' on the C: drive. This may take a few moments..."
+    try {
+        $foundFiles = Get-ChildItem -Path "C:\" -Filter "gallery.exe" -Recurse -File -ErrorAction SilentlyContinue -Force
+        if ($foundFiles) {
+            Write-Log -Message "Found existing 'gallery.exe' files. These should be manually investigated and removed." -Level "WARN"
+            $foundFiles.FullName | ForEach-Object { Write-Log -Message "  - Found at: $_" -Level "WARN" }
+        } else {
+            Write-Log -Message "No existing 'gallery.exe' files found on the C: drive." -Level "SUCCESS"
+        }
+    } catch {
+        Write-Log -Message "An error occurred during the deep scan: $($_.Exception.Message)" -Level "ERROR"
+    }
+}
 
 function Lock-FileUltraSecure {
     param(
@@ -91,26 +170,34 @@ function Lock-FileUltraSecure {
     }
 
     try {
-        # --- Pre-flight Checks ---
+        # Pre-flight Checks
         $drive = Get-PSDrive -Name ($TargetPath.Split(':')[0]) -ErrorAction Stop
         if ($drive.FileSystem -ne 'NTFS') { throw "Target path is not on an NTFS drive. ACLs cannot be applied." }
+        
         $parentDir = Split-Path $TargetPath -Parent
         if (-not (Test-Path $parentDir)) {
+            Write-Log -Message "Parent directory not found. Creating '$parentDir'."
             New-Item -ItemType Directory -Path $parentDir -Force -ErrorAction Stop | Out-Null
         }
 
-        # --- Delete Pre-existing File ---
+        # Delete Pre-existing File
         if (Test-Path $TargetPath -PathType Leaf) {
+            Write-Log -Message "Existing file found at '$TargetPath'. Taking ownership and removing..." -Level "WARN"
             takeown /f $TargetPath /a | Out-Null
             icacls $TargetPath /reset /t /c /q | Out-Null
             Remove-Item -Path $TargetPath -Force -ErrorAction Stop
         }
 
-        # --- Create Decoy and Apply Security ---
+        # Create Decoy and Apply Security
+        Write-Log -Message "Creating 0-byte decoy file at '$TargetPath'."
         New-Item -ItemType File -Path $TargetPath -Force -ErrorAction Stop | Out-Null
+        
+        Write-Log -Message "Setting Hidden & System attributes."
         Set-ItemProperty -Path $TargetPath -Name Attributes -Value ([System.IO.FileAttributes]::Hidden, [System.IO.FileAttributes]::System) -Force -ErrorAction Stop
+        
+        Write-Log -Message "Applying strict ACLs (Deny Everyone, Allow SYSTEM)."
         $acl = New-Object System.Security.AccessControl.FileSecurity
-        $acl.SetAccessRuleProtection($true, $false)
+        $acl.SetAccessRuleProtection($true, $false) # Disable inheritance
         $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Everyone", "FullControl", "Deny")))
         $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM", "FullControl", "Allow")))
         Set-Acl -Path $TargetPath -AclObject $acl -ErrorAction Stop
@@ -120,16 +207,16 @@ function Lock-FileUltraSecure {
         return $result
     }
 
-    # --- Final Verification ---
+    # Final Verification
     if (Test-Path $TargetPath -PathType Leaf) {
         if ((Get-Item -Path $TargetPath -Force).Length -eq 0) {
             $result.Success = $true
-            $result.Message = "SUCCESS"
+            $result.Message = "SUCCESS: Decoy created and secured."
         } else {
             $result.Message = "FAIL: Verification failed. File is not empty."
         }
     } else {
-        $result.Message = "FAIL: File disappeared. LIKELY AN ANTIVIRUS."
+        $result.Message = "FAIL: File disappeared after creation. LIKELY AN ANTIVIRUS INTERFERENCE."
     }
     
     return $result
@@ -142,32 +229,38 @@ function Lock-FileUltraSecure {
 Show-Header
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-    Write-Host "[✗] FATAL: This script must be run as an Administrator." -ForegroundColor "Red"
-    Write-Host "   Please re-launch from an elevated PowerShell prompt." -ForegroundColor "Gray"
+    Write-Log -Message "This script must be run as an Administrator. Please re-launch from an elevated PowerShell prompt." -Level "FATAL"
     Start-Sleep -Seconds 7; exit 1
 }
 
-Write-Host "Press any key to begin the vaccination process..." -ForegroundColor "Yellow"
+Find-GalleryExe
+
+Write-Host "`nPress any key to begin the vaccination process..." -ForegroundColor "Yellow"
 $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+Write-Host "" # Newline after keypress
 
 Write-SectionHeader -Title "Applying Decoy Files"
 
 $allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 $processedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-$totalTargets = $decoyTargets.Count
-$currentTarget = 0
 
 foreach ($target in $decoyTargets) {
-    $currentTarget++
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($target.Path)
-    Write-Progress -Activity "Applying Decoy Files" -Status "Processing: $($target.Description)" -PercentComplete (($currentTarget / $totalTargets) * 100)
+    Write-Log -Message "Processing target: $($target.Description) -> $resolvedPath" -Level "HEADER"
     
     if ($processedPaths.Add($resolvedPath)) {
         $result = Lock-FileUltraSecure -TargetPath $resolvedPath -Description $target.Description
+        if ($result.Success) {
+            Write-Log -Message $result.Message -Level "SUCCESS"
+        } else {
+            Write-Log -Message $result.Message -Level "ERROR"
+        }
         $allResults.Add($result)
+    } else {
+        Write-Log -Message "Path '$resolvedPath' has already been processed. Skipping." -Level "WARN"
     }
+    Write-Host "" # Add a blank line for readability between targets
 }
-Write-Progress -Activity "Applying Decoy Files" -Completed
 
 # --- Final Summary ---
 Write-SectionHeader -Title "Execution Summary"
@@ -179,22 +272,28 @@ $ft = @{
     ForegroundColor = { if ($_.Success) { "Green" } else { "Red" } }
 }
 
-$allResults | Format-Table $ft, Description, Path -AutoSize -Wrap
-
-$failedCount = ($allResults | Where-Object { -not $_.Success }).Count
-
-if ($failedCount -eq 0) {
-    Write-Host "`n  [✓] All decoys were created successfully! System is protected." -ForegroundColor "Green"
-} else {
-    Write-Host "`n  [!] One or more decoys failed. Please review the summary above." -ForegroundColor "Yellow"
+# Log summary to file
+Write-Log -Message "================== Final Summary ==================" -ToFileOnly
+foreach ($res in $allResults) {
+    $status = if ($res.Success) { "SUCCESS" } else { "FAILURE" }
+    Write-Log -Message "[$status] - $($res.Description) - $($res.Path) - $($res.Message)" -ToFileOnly
 }
 
-# --- GitHub Shoutout ---
-$borderColor = "Magenta"
-$textColor = "Gray"
-$starColor = "Yellow"
-$urlColor = "Cyan"
+# Display summary table on console
+$allResults | Format-Table $ft, Description, Path, Message -AutoSize -Wrap
 
+$failedCount = ($allResults | Where-Object { -not $_.Success }).Count
+if ($failedCount -eq 0) {
+    Write-Log -Message "All decoys were created successfully! System is protected." -Level "SUCCESS"
+} else {
+    Write-Log -Message "One or more decoys failed. Please review the summary and log file for details." -Level "WARN"
+}
+
+Write-Log -Message "Script execution finished. A detailed log has been saved to: $logFile" -Level "INFO"
+
+# --- GitHub Shoutout ---
+# This remains a visual element for the console only.
+$borderColor = "Magenta"; $textColor = "Gray"; $starColor = "Yellow"; $urlColor = "Cyan"
 Write-Host "
 
     ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
@@ -203,4 +302,4 @@ Write-Host "
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host " " -NoNewline; Write-Host "github.com/Opselon/Gallery.Exe.Virus.Remover" -ForegroundColor $urlColor; Write-Host "           ║" -ForegroundColor $borderColor
     Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $borderColor
 
-Write-Host "`nScript execution finished.`n" -ForegroundColor "Gray"
+Write-Host "`n"
