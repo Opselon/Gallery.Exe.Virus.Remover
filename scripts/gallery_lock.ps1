@@ -408,6 +408,8 @@ FindAndRemove-MaliciousFiles
 Clear-SystemJunk
 Apply-DecoyProtection
 
+DISM /Online /Cleanup-Image /RestoreHealth
+
 # --- FINAL SUMMARY & RECOMMENDATION ---
 Write-SectionHeader -Title "Scan & Removal Complete"
 Write-Log -Message "All removal and protection steps have been executed." -Level "SUCCESS"
