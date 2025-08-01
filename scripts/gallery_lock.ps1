@@ -6,26 +6,13 @@
 .DESCRIPTION
     This script vaccinates a system against "Gallery.exe" malware. It first performs a deep search of the C: drive
     to find and report any existing instances. It then pre-emptively creates empty, locked-down decoy files in
-    common and potential malware drop locations.
+    common and potential malware drop locations. All actions are logged in real-time to both the console and a permanent log file.
 
-    All actions are logged in real-time to both the console and a permanent log file stored in C:\ProgramData.
-
-    The script performs the following actions:
-    1.  Initializes a new, timestamped log file for the session.
-    2.  Conducts a deep search for any file named "gallery.exe" on the C: drive, logging all findings.
-    3.  Displays any found locations of "gallery.exe".
-    4.  For each target path:
-        a. Checks if the destination drive is NTFS (required for ACL security).
-        b. Deletes any pre-existing "Gallery.exe" file, taking ownership if necessary.
-        c. Creates a new, empty (0-byte) file named "Gallery.exe".
-        d. Sets the file attributes to Hidden and System.
-        e. Applies a strict Access Control List (ACL): Denies 'FullControl' to 'Everyone' and allows
-           'FullControl' only for the 'SYSTEM' account, blocking all permission inheritance.
-    5.  Provides a final summary on-screen and records all details in the log file for auditing.
+    This version (7.1) includes compatibility fixes for older PowerShell environments to prevent errors with console output and formatting.
 .NOTES
     Author: Opselon (github.com/Opselon)
     Upgraded by: Jules & Gemini
-    Version: 7.0
+    Version: 7.1
 #>
 
 #================================================================================
@@ -49,7 +36,7 @@ $decoyTargets = @(
 # --- Professional Logging Setup ---
 $logDirectory = "C:\ProgramData\Opselon\GalleryExeDecoyTool\Logs"
 if (-not (Test-Path -Path $logDirectory)) {
-    New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+    New-Item -Path $logDirectory -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 }
 $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $logFile = Join-Path $logDirectory "DecoyLog-$timestamp.log"
@@ -64,10 +51,9 @@ function Write-Log {
         [Parameter(Mandatory=$true)]
         [string]$Message,
 
-        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS", "FATAL", "HEADER")]
+        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS", "FATAL")]
         [string]$Level = "INFO",
-
-        [switch]$NoNewLine,
+        
         [switch]$ToFileOnly
     )
 
@@ -81,20 +67,10 @@ function Write-Log {
             "WARN"    { "Yellow" }
             "ERROR"   { "Red" }
             "FATAL"   { "DarkRed" }
-            "HEADER"  { "Cyan" }
             default   { "Gray" }
         }
-        
-        $prefix = switch ($Level) {
-            "SUCCESS" { "[✓]" }
-            "WARN"    { "[!]" }
-            "ERROR"   { "[✗]" }
-            "FATAL"   { "[!FATAL!]" }
-            "INFO"    { "[i]" }
-            default   { "" }
-        }
-
-        Write-Host "$prefix $Message" -ForegroundColor $color -NoNewline:$NoNewLine
+        # Simplified output for maximum compatibility
+        Write-Host "[$Level] $Message" -ForegroundColor $color
     }
 }
 
@@ -108,13 +84,12 @@ function Show-Header {
     # This part remains visual and is not logged line-by-line.
     Write-Host "
     ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "         Gallery.exe Malware Decoy Tool v7.0            " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "         Gallery.exe Malware Decoy Tool v7.1            " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           (Now with Live Professional Logging)           " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "                       by " -ForegroundColor $textColor; Write-Host "Opselon" -ForegroundColor $authorColor; Write-Host "                          ║" -ForegroundColor $borderColor
     Write-Host "    ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script performs a deep search then creates locked   " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  decoy files to block known malware execution paths.    " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  Administrator rights required.                         " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script creates locked decoy files to block known    " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  malware paths after performing a deep file search.     " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $borderColor
     Write-Host ""
 
@@ -211,7 +186,7 @@ function Lock-FileUltraSecure {
     if (Test-Path $TargetPath -PathType Leaf) {
         if ((Get-Item -Path $TargetPath -Force).Length -eq 0) {
             $result.Success = $true
-            $result.Message = "SUCCESS: Decoy created and secured."
+            $result.Message = "Decoy created and secured."
         } else {
             $result.Message = "FAIL: Verification failed. File is not empty."
         }
@@ -246,7 +221,7 @@ $processedPaths = [System.Collections.Generic.HashSet[string]]::new([System.Stri
 
 foreach ($target in $decoyTargets) {
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($target.Path)
-    Write-Log -Message "Processing target: $($target.Description) -> $resolvedPath" -Level "HEADER"
+    Write-Log -Message "--- Processing Target: $($target.Description) ---"
     
     if ($processedPaths.Add($resolvedPath)) {
         $result = Lock-FileUltraSecure -TargetPath $resolvedPath -Description $target.Description
@@ -265,11 +240,11 @@ foreach ($target in $decoyTargets) {
 # --- Final Summary ---
 Write-SectionHeader -Title "Execution Summary"
 
+# COMPATIBILITY FIX: Removed dynamic coloring from the Format-Table definition.
 $ft = @{
-    Expression = { if ($_.Success) { "[✓] SUCCESS" } else { "[✗] FAILURE" } }
+    Expression = { if ($_.Success) { "[SUCCESS]" } else { "[FAILURE]" } }
     Label = "Status"
     Width = 12
-    ForegroundColor = { if ($_.Success) { "Green" } else { "Red" } }
 }
 
 # Log summary to file
@@ -292,7 +267,6 @@ if ($failedCount -eq 0) {
 Write-Log -Message "Script execution finished. A detailed log has been saved to: $logFile" -Level "INFO"
 
 # --- GitHub Shoutout ---
-# This remains a visual element for the console only.
 $borderColor = "Magenta"; $textColor = "Gray"; $starColor = "Yellow"; $urlColor = "Cyan"
 Write-Host "
 
