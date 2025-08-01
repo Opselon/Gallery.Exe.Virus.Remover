@@ -18,9 +18,9 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("action", choices=["install", "remove", "status"], help="The action to perform.\n\n"
-                        "[bold green]install[/bold green]: Creates and locks the decoy files.\n"
-                        "[bold yellow]remove[/bold yellow]:  Removes the decoy files.\n"
-                        "[bold blue]status[/bold blue]:  Checks if the decoy files are installed.")
+                        "[bold green]install[/bold green]: Creates and locks the decoy files with a robust, multi-step process.\n"
+                        "[bold yellow]remove[/bold yellow]:  Removes the decoy files with enhanced error handling.\n"
+                        "[bold blue]status[/bold blue]:  Performs a detailed security audit of the decoy files.")
     args = parser.parse_args()
 
     if args.action == "install":

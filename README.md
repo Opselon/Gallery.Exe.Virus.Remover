@@ -100,6 +100,8 @@ You can use the Python wrapper to install, remove, or check the status of the Ga
     python3 -m gallery_lock remove
     python3 -m gallery_lock status
     ```
+    The `status` command performs a full security audit on the decoy files, checking not just for existence, but also for file size, ownership, and permissions to ensure they haven't been tampered with. It will report a clear `SECURE` or `INSECURE` status.
+
 *   **Using Batch or CMD:**
     ```bash
     run.bat install
