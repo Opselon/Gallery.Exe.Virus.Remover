@@ -1,10 +1,3 @@
-Of course. I have integrated the manual removal steps into your PowerShell script, transforming it from a proactive "vaccine" into a comprehensive, all-in-one removal and protection tool.
-
-This upgraded script now actively searches for and removes the malware from processes, services, scheduled tasks, registry entries, and shortcuts, before applying the original decoy file protection. All actions are logged using your existing professional logging system.
-
-Here is the fully upgraded script that "does it all":
-
-```powershell
 #Requires -RunAsAdministrator
 
 <#
@@ -21,7 +14,7 @@ Here is the fully upgraded script that "does it all":
 .NOTES
     Author: Opselon (github.com/Opselon)
     Upgraded by: Jules & Gemini
-    Version: 8.0 (Full Removal & Protection Suite)
+    Version: 8.1 (Fixed critical bug in scheduled task detection logic)
 #>
 
 #================================================================================
@@ -95,8 +88,8 @@ function Show-Header {
 
     Write-Host "
     ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "     Gallery.exe Full Removal & Protection Tool v8.0      " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
-    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "        (Automates all manual removal instructions)       " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "     Gallery.exe Full Removal & Protection Tool v8.1      " -ForegroundColor $titleColor; Write-Host "║" -ForegroundColor $borderColor
+    Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "           (CRITICAL BUG FIXED in Task Detection)         " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "                       by " -ForegroundColor $textColor; Write-Host "Opselon, Jules & Gemini" -ForegroundColor $authorColor; Write-Host "         ║" -ForegroundColor $borderColor
     Write-Host "    ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor $borderColor
     Write-Host "    ║" -NoNewline -ForegroundColor $borderColor; Write-Host "  This script will Neutralize, Remove, and Block the     " -ForegroundColor $textColor; Write-Host "║" -ForegroundColor $borderColor
@@ -176,17 +169,22 @@ function Remove-MaliciousServices {
 # Corresponds to Manual Step 5
 function Remove-MaliciousScheduledTasks {
     Write-SectionHeader -Title "Phase 1.3: Removing Malicious Scheduled Tasks"
-    Write-Log -Message "Searching for scheduled tasks related to '$malwareFileName'."
-    $tasks = Get-ScheduledTask | Where-Object {
-        $_.TaskName -like "*$malwareBaseName*" -or
-        ($_.Actions | ForEach-Object { $_.Execute -like "*$malwareFileName*" }) -or
-        ($_.Triggers | ForEach-Object { $_.Id -like "*$malwareBaseName*" })
+    Write-Log -Message "Searching for scheduled tasks specifically related to '$malwareFileName'."
+    
+    # [FIXED in v8.1] This corrected logic properly checks if any of the properties contain the malware strings.
+    # It will no longer produce false positives on all system tasks.
+    $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+        $task = $_ # Use a temporary variable for clarity inside the script block
+        ( $task.TaskName -like "*$malwareBaseName*" ) -or
+        ( $task.Actions | Where-Object { $_.Execute -like "*$malwareFileName*" } ) -or
+        ( $task.Triggers | Where-Object { $_.Id -like "*$malwareBaseName*" } )
     }
+
     if ($tasks) {
         foreach ($task in $tasks) {
-            Write-Log -Message "Malicious scheduled task found: '$($task.TaskName)'." -Level "WARN"
+            Write-Log -Message "Malicious scheduled task found: '$($task.TaskPath)$($task.TaskName)'." -Level "WARN"
             try {
-                Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false -ErrorAction Stop
+                Unregister-ScheduledTask -TaskPath $task.TaskPath -TaskName $task.TaskName -Confirm:$false -ErrorAction Stop
                 Write-Log -Message "Successfully removed scheduled task '$($task.TaskName)'." -Level "SUCCESS"
             } catch {
                 Write-Log -Message "Failed to remove scheduled task '$($task.TaskName)'. Reason: $($_.Exception.Message)" -Level "ERROR"
@@ -427,4 +425,3 @@ Write-Host "
     Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $borderColor
 
 Write-Host "`n"
-```
