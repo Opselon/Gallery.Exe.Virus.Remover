@@ -24,6 +24,22 @@ Are you tired of removing the `Gallery.exe` malware, only for it to reappear aft
 The result? The malware's attempt to reinfect your system is blocked at the operating system level, every single time.
 
 ---
+### Recommended Method: Run as SYSTEM with PsExec
+
+This is the **most secure method** and guarantees the script can apply its strongest protections.
+
+1.  **Download PsExec:**
+    *   Download the official **Sysinternals Suite** from Microsoft: [**Download Here**](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec).
+    *   Extract the ZIP file to a simple location, like `C:\Sysinternals`.
+
+2.  **Open an Administrator Terminal:**
+    *   Press `Win + X` and select **Terminal (Admin)** or **Windows PowerShell (Admin)**.
+
+3.  **Navigate to the PsExec Folder:**
+    *   In the terminal, go to the directory where you extracted PsExec.
+      ```powershell
+      cd C:\Sysinternals
+      ```
 
 
 ### ⚡ Quick-Use: Single Command (from the internet)
@@ -47,7 +63,34 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
     ```powershell
     iex ((iwr -Uri "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/main/scripts/remove_gallery_lock.ps1" -UseBasicParsing).Content)
     ```
+    
+### 🚨 Troubleshooting: Common Errors
 
+#### Issue: My log is full of `FAIL: Target path is not on an NTFS drive` errors.
+
+If your script output looks exactly like this, with repeated failures:
+
+```
+[INFO] --- Processing Target: User Profile (AppData\Roaming) ---
+[ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
+
+[INFO] --- Processing Target: System Profile (32-bit) ---
+[ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
+
+... (and so on for all targets)
+```
+
+#### **Diagnosis: This log is absolute proof you are running the script in a standard Administrator PowerShell, NOT a SYSTEM-level PowerShell.**
+
+This is the most common mistake. Even when "Run as Administrator," your PowerShell session does not have the required privileges to modify system-owned folders. The script tries to check the drive type, fails because it lacks permission, and incorrectly reports the "not on an NTFS drive" error.
+
+#### **Solution: You MUST use PsExec.**
+
+1.  **Close** your current PowerShell window to avoid confusion.
+2.  Go back and follow the instructions in the **"How to Run This Script (The Right Way)"** section carefully.
+3.  Launch a new PowerShell window using the `psexec.exe -s -i powershell.exe` command.
+4.  **Confirm your identity.** Before running the decoy script, type `whoami` and press Enter. The output **must be** `nt authority\system`. If it says anything else, you are in the wrong window.
+5.  Once you have confirmed you are `SYSTEM`, run the decoy script again. All errors will be resolved.
 
 
 ## 🚀 Key Features
@@ -66,23 +109,6 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
 ## 🛠️ How to Use: The 2-Minute Guide
 
 For maximum effectiveness, the script must be run as `SYSTEM`. This is the highest authority level on Windows, even above Administrator.
-
-### Recommended Method: Run as SYSTEM with PsExec
-
-This is the **most secure method** and guarantees the script can apply its strongest protections.
-
-1.  **Download PsExec:**
-    *   Download the official **Sysinternals Suite** from Microsoft: [**Download Here**](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec).
-    *   Extract the ZIP file to a simple location, like `C:\Sysinternals`.
-
-2.  **Open an Administrator Terminal:**
-    *   Press `Win + X` and select **Terminal (Admin)** or **Windows PowerShell (Admin)**.
-
-3.  **Navigate to the PsExec Folder:**
-    *   In the terminal, go to the directory where you extracted PsExec.
-      ```powershell
-      cd C:\Sysinternals
-      ```
 
 4.  **Launch a SYSTEM-Level PowerShell:**
     *   Run the following command. A new PowerShell window will open with `SYSTEM` privileges.
