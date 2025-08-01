@@ -68,20 +68,72 @@ def remove():
         progress.update(task, advance=1)
     console.print("[bold green]Removal complete.[/bold green]")
 
+def run_powershell_check_script(script_path, file_path):
+    """
+    Runs a PowerShell check script and returns its standard output.
+    Returns an error string if the script fails.
+    """
+    command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path, "-Path", file_path]
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        return f"POWERSHELL_ERROR: {e.stderr.strip()}"
+    except FileNotFoundError:
+        return "PYTHON_ERROR: PowerShell is not installed or not in the system's PATH."
+
+
 def check_status():
     """
-    Checks the status of the Gallery-Lock decoys.
+    Checks the detailed security status of the Gallery-Lock decoys.
     """
-    console.print("[bold cyan]Checking Gallery-Lock status...[/bold cyan]")
-    user_file = os.path.expandvars(r"%APPDATA%\Gallery.exe")
-    system_file = r"C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe"
+    console.print("[bold cyan]Performing detailed security check of Gallery-Lock decoys...[/bold cyan]")
 
-    if os.path.exists(user_file):
-        console.print("[bold green]User decoy: INSTALLED[/bold green]")
-    else:
-        console.print("[bold yellow]User decoy: NOT INSTALLED[/bold yellow]")
+    paths_to_check = {
+        "User Decoy": os.path.expandvars(r"%APPDATA%\Gallery.exe"),
+        "System Decoy": r"C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe"
+    }
 
-    if os.path.exists(system_file):
-        console.print("[bold green]System decoy: INSTALLED[/bold green]")
+    script_path = os.path.join("scripts", "check_status.ps1")
+    overall_secure = True
+
+    for name, path in paths_to_check.items():
+        console.print(f"\n[bold]--- {name} ---[/bold]")
+        console.print(f"Path: {path}")
+
+        # Ensure the check script exists before running it
+        if not os.path.exists(script_path):
+            console.print("Status: [bold red]ERROR[/bold red]")
+            console.print(f"Details: The check script was not found at '{script_path}'")
+            overall_secure = False
+            continue
+
+        status = run_powershell_check_script(script_path, path)
+
+        if status == "SECURE":
+            console.print("Status: [bold green]SECURE[/bold green]")
+            console.print("Details: Decoy is correctly installed, locked, and owned by SYSTEM.")
+        elif status == "NOT_FOUND":
+            console.print("Status: [bold yellow]NOT INSTALLED[/bold yellow]")
+            overall_secure = False
+        elif status.startswith("INSECURE:"):
+            reason = status.replace("INSECURE:", "").strip()
+            console.print("Status: [bold red]INSECURE[/bold red]")
+            console.print(f"Details: Decoy is present but misconfigured. {reason}")
+            overall_secure = False
+        else:
+            console.print("Status: [bold red]UNKNOWN[/bold red]")
+            console.print(f"Details: An unexpected error occurred. Raw output: {status}")
+            overall_secure = False
+
+    console.print("\n[bold]--- Overall Summary ---[/bold]")
+    if overall_secure:
+        console.print("[bold green]✅ System is fully protected by Gallery-Lock.[/bold green]")
     else:
-        console.print("[bold yellow]System decoy: NOT INSTALLED[/bold yellow]")
+        console.print("[bold red]⚠️ Your system is not fully protected. Please run the 'install' command.[/bold red]")
