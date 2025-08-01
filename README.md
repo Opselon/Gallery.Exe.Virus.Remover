@@ -54,15 +54,6 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
     iex ((iwr -Uri "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/main/scripts/gallery_lock.ps1" -UseBasicParsing).Content)
     ```
 
-*   **To CHECK the lock STATUS:**
-    ```powershell
-    iex ((iwr -Uri "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/main/scripts/check_status.ps1" -UseBasicParsing).Content)
-    ```
-
-*   **To REMOVE the lock (requires Administrator privileges):**
-    ```powershell
-    iex ((iwr -Uri "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/main/scripts/remove_gallery_lock.ps1" -UseBasicParsing).Content)
-    ```
     
 ### 🚨 Troubleshooting: Common Errors
 
