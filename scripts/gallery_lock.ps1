@@ -3,11 +3,11 @@
 
 <#
 .SYNOPSIS
-    Project TitanDecoy v5.0 (PRO) - Ultimate Gallery.exe Malware Mitigation System.
+    Project TitanDecoy v5.1 (PRO-Compatible) - Ultimate Gallery.exe Malware Mitigation System.
 .DESCRIPTION
     A comprehensive, GUI-driven security utility designed for the complete and total lockdown of 
-    the "Gallery.exe" malware execution vector. This is not merely a script; it is a full-featured
-    application engineered for maximum operational visibility, robustness, and security hardening.
+    the "Gallery.exe" malware execution vector. This version is specifically modified to ensure
+    full compatibility with Windows PowerShell 5.1.
 
     The application operates in distinct, user-controlled phases:
     1. SYSTEM ANALYSIS: Dynamically scans the host machine to identify all user profiles and potential
@@ -35,7 +35,7 @@
 
 .NOTES
     Author:      Jules & Gemini
-    Version:     5.0 "Titan"
+    Version:     5.1 "Titan" (PS 5.1 Compatible)
     ReleaseDate: 2023-10-27
     License:     MIT
     ProjectURL:  https://github.com/Opselon/Gallery.Exe.Virus.Remover
@@ -44,7 +44,7 @@
 #================================================================================
 # SCRIPT CONFIGURATION & GLOBAL STATE
 #================================================================================
-$Script:Version = "5.0 PRO 'Titan'"
+$Script:Version = "5.1 PRO 'Titan' (Compatible)"
 $Script:LogFile = Join-Path $env:TEMP "TitanDecoy-Log-$($PID).log"
 $Script:DecoyFileName = "Gallery.exe"
 $Script:TargetPaths = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -55,10 +55,11 @@ $Script:UIObjects = @{}
 #================================================================================
 function Load-WpfForm {
     # Define the GUI layout in XAML. This is a here-string.
+    Add-Type -AssemblyName PresentationFramework
     [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Name="Window_Main" Title="TitanDecoy v5.0 - Ultimate Malware Mitigation" Height="700" Width="900" MinHeight="600" MinWidth="800"
+        x:Name="Window_Main" Title="TitanDecoy v5.1 - Ultimate Malware Mitigation" Height="700" Width="900" MinHeight="600" MinWidth="800"
         WindowStartupLocation="CenterScreen" WindowStyle="SingleBorderWindow" Background="#FF1E1E1E">
     <Grid>
         <Grid.RowDefinitions>
@@ -71,7 +72,7 @@ function Load-WpfForm {
         <Border Grid.Row="0" Background="#FF2D2D30" Padding="10" BorderBrush="#FF007ACC" BorderThickness="0,0,0,2">
             <StackPanel>
                 <TextBlock Text="Project TitanDecoy - Gallery.exe Mitigation System" Foreground="White" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" FontFamily="Segoe UI"/>
-                <TextBlock x:Name="TextBlock_Version" Text="Version 5.0 PRO 'Titan' | Administrator Privileges: Active" Foreground="#FF00AACC" FontSize="12" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                <TextBlock x:Name="TextBlock_Version" Text="Version 5.1 PRO 'Titan' | Administrator Privileges: Active" Foreground="#FF00AACC" FontSize="12" HorizontalAlignment="Center" Margin="0,5,0,0"/>
             </StackPanel>
         </Border>
 
@@ -125,7 +126,7 @@ function Load-WpfForm {
              <TabItem Header="About" Background="#FF3F3F46" Foreground="White">
                 <StackPanel Margin="20">
                     <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14">
-                        <Run FontWeight="Bold" FontSize="18" Foreground="#FF00AACC">Project TitanDecoy v5.0 PRO</Run><LineBreak/><LineBreak/>
+                        <Run FontWeight="Bold" FontSize="18" Foreground="#FF00AACC">Project TitanDecoy v5.1 PRO</Run><LineBreak/><LineBreak/>
                         This utility is the culmination of efforts to create a definitive, proactive defense against malware leveraging the 'Gallery.exe' execution vector. By creating zero-byte, ultra-locked decoy files in common and dynamically discovered malware drop zones, it effectively blocks the malware from establishing persistence.<LineBreak/><LineBreak/>
                         <Run FontWeight="Bold">Author:</Run> Jules & Gemini<LineBreak/>
                         <Run FontWeight="Bold">Original Concept:</Run> Opselon (github.com/Opselon)<LineBreak/>
@@ -234,77 +235,6 @@ function Lock-UI {
 #================================================================================
 # CORE ENGINE FUNCTIONS
 #================================================================================
-
-function Get-SystemTargetPaths {
-    Add-Log -Level INFO -Message "Starting system analysis to discover target paths..."
-    $discoveredPaths = [System.Collections.Generic.List[object]]::new()
-    
-    # --- Standard System-Wide Locations ---
-    $basePaths = @(
-        @{ Path = Join-Path $env:windir "Temp"; Description = "Windows Temp" };
-        @{ Path = "C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming"; Description = "System Profile (32-bit)" };
-        @{ Path = "C:\Windows\System32\config\systemprofile\AppData\Roaming"; Description = "System Profile (64-bit)" }
-    )
-
-    foreach ($p in $basePaths) {
-        $discoveredPaths.Add([PSCustomObject]@{
-            Path = Join-Path $p.Path $Script:DecoyFileName
-            Description = $p.Description
-            Status = "Pending"
-            Message = "Awaiting analysis"
-            StatusColor = "White"
-        })
-        $discoveredPaths.Add([PSCustomObject]@{
-            Path = Join-Path $p.Path "gallery\$($Script:DecoyFileName)"
-            Description = "$($p.Description) (gallery subdir)"
-            Status = "Pending"
-            Message = "Awaiting analysis"
-            StatusColor = "White"
-        })
-    }
-
-    # --- Dynamic User Profile Locations ---
-    Add-Log -Level INFO -Message "Scanning all user profiles..."
-    Get-CimInstance -ClassName Win32_UserProfile | ForEach-Object {
-        if ($_.LocalPath -and (Test-Path $_.LocalPath)) {
-            $userProfilePath = $_.LocalPath
-            $userName = $userProfilePath.Split('\')[-1]
-            Add-Log -Level INFO -Message "Found profile for user: $userName"
-
-            $userPaths = @(
-                @{ Path = Join-Path $userProfilePath "AppData\Roaming"; Description = "User Profile Roaming ($userName)" };
-                @{ Path = Join-Path $userProfilePath "AppData\Local"; Description = "User Profile Local ($userName)" };
-                @{ Path = Join-Path $userProfilePath "AppData\Local\Temp"; Description = "User Temp ($userName)" };
-                @{ Path = Join-Path $userProfilePath "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"; Description = "User Startup ($userName)" }
-            )
-            foreach ($p in $userPaths) {
-                $discoveredPaths.Add([PSCustomObject]@{
-                    Path = Join-Path $p.Path $Script:DecoyFileName
-                    Description = $p.Description
-                    Status = "Pending"
-                    Message = "Awaiting analysis"
-                    StatusColor = "White"
-                })
-                $discoveredPaths.Add([PSCustomObject]@{
-                    Path = Join-Path $p.Path "gallery\$($Script:DecoyFileName)"
-                    Description = "$($p.Description) (gallery subdir)"
-                    Status = "Pending"
-                    Message = "Awaiting analysis"
-                    StatusColor = "White"
-                })
-            }
-        }
-    }
-
-    # --- Remove Duplicates and Finalize ---
-    $uniquePaths = $discoveredPaths | Sort-Object Path | Get-Unique -AsString
-    $Script:TargetPaths.Clear()
-    $uniquePaths.ForEach({ $Script:TargetPaths.Add($_) })
-
-    Add-Log -Level SUCCESS -Message "Analysis complete. Found $($Script:TargetPaths.Count) potential target locations."
-}
-
-
 function Invoke-DecoyOperation {
     param (
         [Parameter(Mandatory=$true)]
@@ -433,7 +363,17 @@ function Invoke-DecoyOperation {
     }
 
     $summaryMessage = "$Mode operation complete. Total: $total, Success: $($total - $failures), Failures: $failures."
-    Add-Log -Level ($failures -eq 0 ? "SUCCESS" : "WARN") -Message "===== $summaryMessage ====="
+    
+    # ==================== THIS IS THE FIX ====================
+    # Replaced the ternary operator (? :) with a standard if/else block for PS 5.1 compatibility.
+    if ($failures -eq 0) {
+        Add-Log -Level "SUCCESS" -Message "===== $summaryMessage ====="
+    }
+    else {
+        Add-Log -Level "WARN" -Message "===== $summaryMessage ====="
+    }
+    # ================= END OF FIX ============================
+
     Update-Status $summaryMessage
     Lock-UI -IsLocked $false
 }
@@ -452,12 +392,10 @@ $Script:UIObjects.Button_Analyze.Add_Click({
     Add-Log -Level INFO -Message "User initiated system analysis."
     $Script:UIObjects.ListView_Targets.ItemsSource = $null
     
-    # Run in a background thread to keep UI responsive
+    # Background job to keep UI responsive
     $job = Start-Job -ScriptBlock {
-        # This block needs the functions defined within it or sourced
-        function Get-SystemTargetPaths {
-            $Script:DecoyFileName = "Gallery.exe" # Pass necessary variables
-            Add-Log -Level INFO -Message "Starting system analysis to discover target paths..."
+        $ScriptBlockContent = {
+            $Script:DecoyFileName = "Gallery.exe"
             $discoveredPaths = [System.Collections.Generic.List[object]]::new()
             
             $basePaths = @(
@@ -491,9 +429,9 @@ $Script:UIObjects.Button_Analyze.Add_Click({
                     }
                 }
             }
-            return $discoveredPaths | Sort-Object Path | Get-Unique -AsString
+            return $discoveredPaths | Sort-Object Path | Select-Object -Unique
         }
-        Get-SystemTargetPaths
+        Invoke-Command -ScriptBlock $ScriptBlockContent
     }
 
     $allPaths = Receive-Job -Job $job -Wait -AutoRemoveJob
@@ -518,8 +456,8 @@ $Script:UIObjects.Button_Cleanup.Add_Click({
     $confirm = [System.Windows.MessageBox]::Show(
         "Are you sure you want to remove ALL TitanDecoy files from this system? This action cannot be undone.",
         "Confirm Cleanup",
-        "YesNo",
-        "Warning"
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Warning
     )
     if ($confirm -eq "Yes") {
         Invoke-DecoyOperation -Mode "CLEANUP"
