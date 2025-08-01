@@ -65,11 +65,11 @@ function Show-Header {
 function Write-SectionHeader {
     param([string]$Title)
     $borderColor = "Cyan"
-    Write-Host "
-    ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $borderColor
-    $padding = " " * ([Math]::Floor((58 - $Title.Length) / 2))
-    Write-Host "    ║$($padding)$Title" -ForegroundColor "White"
-    Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $borderColor
+    $titleText = " $Title "
+    $paddingLength = [Math]::Floor((56 - $titleText.Length) / 2)
+    $padding = "═" * $paddingLength
+    Write-Host ""
+    Write-Host "    ╔$($padding)$($titleText)$($padding)╗" -ForegroundColor $borderColor
     Write-Host ""
 }
 
@@ -150,7 +150,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 Write-Host "Press any key to begin the vaccination process..." -ForegroundColor "Yellow"
-$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null; Write-Host ""
+$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
 
 Write-SectionHeader -Title "Applying Decoy Files"
 
@@ -171,20 +171,20 @@ Write-SectionHeader -Title "Execution Summary"
 $failedCount = 0
 foreach ($res in $allResults) {
     if ($res.Success) {
-        Write-Host " [✓] " -ForegroundColor Green -NoNewline
-        Write-Host "$($res.Path) " -ForegroundColor Gray -NoNewline
+        Write-Host "  [✓] " -ForegroundColor Green -NoNewline
+        Write-Host "$($res.Message) " -ForegroundColor "Gray" -NoNewline
     } else {
         $failedCount++
-        Write-Host " [✗] " -ForegroundColor Red -NoNewline
-        Write-Host "$($res.Path) " -ForegroundColor Gray -NoNewline
+        Write-Host "  [✗] " -ForegroundColor Red -NoNewline
+        Write-Host "$($res.Message) " -ForegroundColor "Yellow" -NoNewline
     }
-    Write-Host "- $($res.Message)" -ForegroundColor (if ($res.Success) { "Green" } else { "Red" })
+    Write-Host "($($res.Path))" -ForegroundColor "DarkGray"
 }
 
 if ($failedCount -eq 0) {
-    Write-Host "`n [✓] All decoys were created and verified successfully! System is protected." -ForegroundColor "Green"
+    Write-Host "`n  [✓] All decoys were created successfully! System is protected." -ForegroundColor "Green"
 } else {
-    Write-Host "`n [!] One or more decoys failed. Please review the summary above." -ForegroundColor "Yellow"
+    Write-Host "`n  [!] One or more decoys failed. Please review the summary above." -ForegroundColor "Yellow"
 }
 
 # --- GitHub Shoutout ---
