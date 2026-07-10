@@ -601,24 +601,79 @@ function Invoke-DeepSystemScan {
         }
     }
     
-    Write-Host "`n"
+Write-Host "`n"
     $threatsFound += Scan-RegistryPersistence
     $threatsFound += Scan-ScheduledTasks
 
-    Write-Host "`n  =====================================================================" -ForegroundColor DarkGray
-    Write-Host "  [✓] SCAN COMPLETE" -ForegroundColor Green
-    Write-Host "      Duration       : $(([math]::Round(((Get-Date) - $startTime).TotalSeconds, 2))) Seconds" -ForegroundColor Gray
-    Write-Host "      Files Analyzed : $scannedFiles" -ForegroundColor Gray
-    if ($threatsFound -gt 0) {
-        Write-Host "      Threats Found  : $threatsFound" -ForegroundColor Red
-        Write-Host "      RECOMMENDATION : Proceed to Option [4] to execute quarantine." -ForegroundColor Yellow
+    # ==========================================================================
+    # UPGRADED THREAT DETECTION DISPLAY (REAL-TIME TELEMETRY LIST)
+    # ==========================================================================
+    Write-Host "  =====================================================================" -ForegroundColor DarkGray
+    if ($Global:ThreatDatabase.Count -gt 0) {
+        Write-Host "  [🚨] DETECTED ANOMALIES & THREAT VECTORS:" -ForegroundColor Red
+        Write-Host "  ─────────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+        
+        foreach ($threat in $Global:ThreatDatabase) {
+            # Determine vector type for formatting
+            $vectorType = "FILE"
+            $color = "Yellow"
+            if ($threat.Forensics.Path -match "^Registry:") {
+                $vectorType = "REGISTRY"
+                $color = "Magenta"
+            } elseif ($threat.Forensics.Path -match "^Task:") {
+                $vectorType = "TASK"
+                $color = "Cyan"
+            }
+
+            # Safely truncate long paths to keep the UI perfectly aligned
+            $displayPath = $threat.Forensics.Path -replace "^Registry:\s*|^Task:\s*", ""
+            if ($displayPath.Length -gt 65) {
+                $displayPath = "..." + $displayPath.Substring($displayPath.Length - 62)
+            }
+
+            # Render threat line with explicit markers
+            Write-Host "  [✗] " -ForegroundColor Red -NoNewline
+            Write-Host "Type: " -ForegroundColor DarkGray -NoNewline
+            Write-Host "$($vectorType.PadRight(9))" -ForegroundColor $color -NoNewline
+            Write-Host " | " -ForegroundColor DarkGray -NoNewline
+            Write-Host "Score: " -ForegroundColor DarkGray -NoNewline
+            Write-Host "[$($threat.Risk.Score)/100]".PadRight(9) -ForegroundColor Red -NoNewline
+            Write-Host " | " -ForegroundColor DarkGray -NoNewline
+            Write-Host "Loc: " -ForegroundColor DarkGray -NoNewline
+            Write-Host $displayPath -ForegroundColor White
+        }
+        Write-Host "  ─────────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
     } else {
-        Write-Host "      Threats Found  : 0" -ForegroundColor Green
-        Write-Host "      STATUS         : SYSTEM IS SECURE." -ForegroundColor Green
+        Write-Host "  [✓] SYSTEM SANITY CHECK PASSED - NO ACTIVE ANOMALIES DETECTED" -ForegroundColor Green
+    }
+
+    # ==========================================================================
+    # UPGRADED FINAL SUMMARY BOX
+    # ==========================================================================
+    Write-Host "`n  [✓] SCAN COMPLETE" -ForegroundColor Green
+    Write-Host "  ╔═══════════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "  ║ " -ForegroundColor Green -NoNewline; Write-Host "Metrics & Diagnostic Diagnostics Summary                          " -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor Green
+    Write-Host "  ╠═══════════════════════════════════════════════════════════════════╣" -ForegroundColor Green
+    
+    $durationStr = ("$([math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)) Seconds").PadRight(40)
+    Write-Host "  ║ " -ForegroundColor Green -NoNewline; Write-Host "Scan Duration  : " -ForegroundColor Cyan -NoNewline; Write-Host $durationStr -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor Green
+    
+    $filesStr = ("$scannedFiles Files").PadRight(40)
+    Write-Host "  ║ " -ForegroundColor Green -NoNewline; Write-Host "Files Analyzed : " -ForegroundColor Cyan -NoNewline; Write-Host $filesStr -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor Green
+    
+    $threatsColor = if ($threatsFound -gt 0) { "Red" } else { "Green" }
+    $threatsStr = ("$threatsFound Flags Registered").PadRight(40)
+    Write-Host "  ║ " -ForegroundColor Green -NoNewline; Write-Host "Threats Found  : " -ForegroundColor Cyan -NoNewline; Write-Host $threatsStr -ForegroundColor $threatsColor -NoNewline; Write-Host "║" -ForegroundColor Green
+    
+    Write-Host "  ╚═══════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+
+    if ($threatsFound -gt 0) {
+        Write-Host "`n  [!] ACTION REQUIRED: Proceed to Main Menu -> Option [4] to clean/quarantine." -ForegroundColor Yellow
+    } else {
+        Write-Host "`n  [+] STATUS: SYSTEM SHIELD ACTIVE & SECURE." -ForegroundColor Green
     }
     
     Invoke-GenPause
-}
 
 # ==============================================================================
 # [11] QUARANTINE & AES ENCRYPTION ENGINE
@@ -709,25 +764,37 @@ function Show-ThreatCard {
     
     $color = if ($Threat.Risk.Score -gt 80) { "Red" } elseif ($Threat.Risk.Score -gt 50) { "Magenta" } else { "Yellow" }
     
+    # Helper to truncate and pad strings so the UI box NEVER breaks alignment
+    function Format-PadRight($str, $len) {
+        if ([string]::IsNullOrEmpty($str)) { return " " * $len }
+        if ($str.Length -gt $len) { return $str.Substring(0, $len - 3) + "..." }
+        return $str.PadRight($len)
+    }
+
+    $pathStr = Format-PadRight $Threat.Forensics.Path 64
+    $hashStr = if ($Threat.Forensics.SHA256) { Format-PadRight $Threat.Forensics.SHA256 64 } else { Format-PadRight "N/A" 64 }
+    
+    $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task)" }
+    $sizeStr  = Format-PadRight $sizeText 64
+
+    $signerPad = Format-PadRight "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]" 64
+    $riskPad   = Format-PadRight "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]" 64
+    $flagsPad  = Format-PadRight $Threat.Risk.Reasons 64
+
     Write-Host "  ╔══════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $color
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ACTIVE THREAT IDENTIFIED                                                     " -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
     Write-Host "  ╠══════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor $color
     
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "File Path : " -ForegroundColor Cyan -NoNewline; Write-Host $Threat.Forensics.Path.PadRight(64) -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "SHA256    : " -ForegroundColor Cyan -NoNewline; Write-Host $Threat.Forensics.SHA256.PadRight(64) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    
-    $signerPad = "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]".PadRight(64)
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Full Path : " -ForegroundColor Cyan -NoNewline; Write-Host $pathStr -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "File Size : " -ForegroundColor Cyan -NoNewline; Write-Host $sizeStr -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "SHA256    : " -ForegroundColor Cyan -NoNewline; Write-Host $hashStr -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Signature : " -ForegroundColor Cyan -NoNewline; Write-Host $signerPad -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    
-    $riskPad = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]".PadRight(64)
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Risk Lvl  : " -ForegroundColor Cyan -NoNewline; Write-Host $riskPad -ForegroundColor Red -NoNewline; Write-Host "║" -ForegroundColor $color
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Flags     : " -ForegroundColor Cyan -NoNewline; Write-Host $flagsPad -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
     
-    # Text wrapping for reasons
-    $reasons = $Threat.Risk.Reasons
-    if ($reasons.Length -gt 60) { $reasons = $reasons.Substring(0, 60) + "..." }
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Flags     : " -ForegroundColor Cyan -NoNewline; Write-Host $reasons.PadRight(64) -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
     Write-Host "  ╚══════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
+
 
 function Invoke-CleanupEngine {
     Show-GenHeader
@@ -775,33 +842,82 @@ function Invoke-CleanupEngine {
 
         switch -Regex ($action) {
             "^[Yy]" {
+switch -Regex ($action) {
+            "^[Yy]" {
                 if ($threat.Forensics.Path -match "^Registry:") {
-                    $pathParts = $threat.Forensics.Path.Split(":")
-                    $regKey = $pathParts[1].Trim().Split("\")
-                    $valName = $regKey[-1]
-                    $regPath = ($regKey[0..($regKey.Length-2)] -join "\")
+                    Write-Host "  [~] Trace: Parsing Registry target..." -ForegroundColor DarkGray
+                    
+                    # Safely isolate the exact Registry path and Value Name without breaking on HKLM: colons
+                    $cleanRegString = $threat.Forensics.Path -replace "^Registry:\s*", ""
+                    $regPath = Split-Path $cleanRegString -Parent
+                    $valName = Split-Path $cleanRegString -Leaf
+                    
+                    Write-Host "  [~] Trace: Target Path  -> $regPath" -ForegroundColor DarkGray
+                    Write-Host "  [~] Trace: Target Value -> $valName" -ForegroundColor DarkGray
+                    Write-GenLog "Attempting to purge registry key: Path='$regPath', Value='$valName'" "INFO"
+                    
                     try {
                         Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
-                        Write-Host "  [+] Persistence Key Purged." -ForegroundColor Green
+                        Write-Host "  [+] Persistence Key Purged Successfully." -ForegroundColor Green
+                        Write-GenLog "Successfully deleted registry value: $valName at $regPath" "INFO"
                         $cleanedCount++
-                    } catch { Write-Host "  [-] Failed to purge key." -ForegroundColor Red }
+                    } catch { 
+                        Write-Host "  [-] Failed to purge registry key: $($_.Exception.Message)" -ForegroundColor Red 
+                        Write-GenLog "Registry purge failed for $cleanRegString : $($_.Exception.Message)" "ERROR"
+                    }
+                    
                 } elseif ($threat.Forensics.Path -match "^Task:") {
-                    schtasks.exe /Delete /TN "`"$($threat.Forensics.Name)`"" /F | Out-Null
-                    Write-Host "  [+] Scheduled Task Purged." -ForegroundColor Green
-                    $cleanedCount++
-                } else {
-                    $procName = [System.IO.Path]::GetFileNameWithoutExtension($threat.Forensics.Path)
-                    Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
+                    Write-Host "  [~] Trace: Targeting Scheduled Task [$($threat.Forensics.Name)]..." -ForegroundColor DarkGray
+                    Write-GenLog "Attempting to delete scheduled task: $($threat.Forensics.Name)" "INFO"
+                    
                     try {
+                        # Using Start-Process for schtasks ensures we can capture the exit code for the trace
+                        $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$($threat.Forensics.Name)`" /F" -Wait -NoNewWindow -PassThru
+                        if ($schProc.ExitCode -eq 0) {
+                            Write-Host "  [+] Scheduled Task Purged Successfully." -ForegroundColor Green
+                            Write-GenLog "Successfully deleted scheduled task: $($threat.Forensics.Name)" "INFO"
+                            $cleanedCount++
+                        } else {
+                            throw "schtasks.exe returned error code $($schProc.ExitCode)"
+                        }
+                    } catch {
+                        Write-Host "  [-] Failed to purge task: $($_.Exception.Message)" -ForegroundColor Red
+                        Write-GenLog "Task purge failed for $($threat.Forensics.Name) : $($_.Exception.Message)" "ERROR"
+                    }
+                    
+                } else {
+                    Write-Host "  [~] Trace: Targeting File System Payload..." -ForegroundColor DarkGray
+                    Write-GenLog "Attempting to delete file threat: $($threat.Forensics.Path)" "INFO"
+                    
+                    $procName = [System.IO.Path]::GetFileNameWithoutExtension($threat.Forensics.Path)
+                    Write-Host "  [~] Trace: Terminating associated process [$procName]..." -ForegroundColor DarkGray
+                    Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
+                    
+                    try {
+                        Write-Host "  [~] Trace: Stripping file ownership and ACL protections..." -ForegroundColor DarkGray
                         takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
                         icacls.exe "`"$($threat.Forensics.Path)`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                        
+                        Write-Host "  [~] Trace: Normalizing file attributes..." -ForegroundColor DarkGray
                         $f = Get-Item $threat.Forensics.Path -Force
                         $f.Attributes = 'Normal'
+                        
                         Remove-Item -Path $threat.Forensics.Path -Force -ErrorAction Stop
-                        Write-Host "  [+] Threat Deleted." -ForegroundColor Green
+                        Write-Host "  [+] File Threat Deleted Successfully." -ForegroundColor Green
+                        Write-GenLog "Successfully deleted file: $($threat.Forensics.Path)" "INFO"
                         $cleanedCount++
-                    } catch { Write-Host "  [-] Deletion Failed: $($_.Exception.Message)" -ForegroundColor Red }
+                    } catch { 
+                        Write-Host "  [-] File Deletion Failed: $($_.Exception.Message)" -ForegroundColor Red 
+                        Write-GenLog "File deletion failed for $($threat.Forensics.Path) : $($_.Exception.Message)" "ERROR"
+                    }
                 }
+                
+                # Auto-Recovery
+                if ($threat.Risk.IsGClone) { 
+                    if (Restore-HiddenOriginal -ThreatItem $threat) { Write-Host "  [+] Hidden Original Restored." -ForegroundColor Blue }
+                    if (Remove-IcoClone -ThreatItem $threat) { Write-Host "  [+] Fake ICO icon removed." -ForegroundColor Blue }
+                }
+            }
                 
                 # Auto-Recovery
                 if ($threat.Risk.IsGClone) { 
