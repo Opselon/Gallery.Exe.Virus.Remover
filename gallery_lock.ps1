@@ -273,6 +273,19 @@ function Get-ThreatScore {
         Evaluates a file's forensic profile against Gallery/Grenam known behaviors.
     #>
     param($Forensics)
+    
+    # CRITICAL SECURITY BYPASS: If the file is validly signed by ESET, Microsoft, or Google, automatically declare SAFE.
+    if ($Forensics.SignatureStatus -eq "Valid" -and $Forensics.Signer -match "ESET|Microsoft|Google|Mozilla|Intel|NVIDIA|AMD") {
+        return [PSCustomObject]@{
+            Score = 0
+            Status = "SAFE"
+            Reasons = "Safelisted: Verified Trusted Publisher ($($Forensics.Signer))"
+            IsGClone = $false
+            HiddenOriginalPath = $null
+            HasMatchingIco = $false
+        }
+    }
+
     $score = 0
     $reasons = [System.Collections.Generic.List[string]]::new()
     
@@ -452,7 +465,6 @@ function Invoke-MemoryHunt {
 # ==============================================================================
 # [09] PERSISTENCE & REGISTRY SCANNER
 # ==============================================================================
-
 function Scan-RegistryPersistence {
     Write-Host "  [+] Scanning Registry Persistence Vectors..." -ForegroundColor Cyan
     $threatsFound = 0
@@ -470,19 +482,54 @@ function Scan-RegistryPersistence {
         if (Test-Path $reg) {
             $items = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
             
-            # Standard Run Keys
             foreach ($prop in $items.PSObject.Properties) {
-                if ($prop.Value -is [string] -and ($prop.Value -match "Gallery\.exe" -or $prop.Value -match "g.*\.exe")) {
-                    $threatsFound++
-                    $Global:ThreatDatabase.Add([PSCustomObject]@{
-                        Forensics = [PSCustomObject]@{ Path = "Registry: $($reg)\$($prop.Name)"; Name = $prop.Name; Size = 0; IsCriticalPath = $false; Signer = "N/A" }
-                        Risk = [PSCustomObject]@{ Status = "MALWARE"; Score = 100; Reasons = "Malicious Persistence Key ($($prop.Value))"; IsGClone = $false }
-                    })
-                    Write-GenLog "Registry Persistence Found: $($reg)\$($prop.Name) -> $($prop.Value)" "WARN"
+                if ($prop.Value -is [string]) {
+                    $rawVal = $prop.Value
+                    
+                    # Safety Step 1: Clean and extract ONLY the executable path from arguments
+                    $exePath = ""
+                    if ($rawVal -match '^"([^"]+)"') {
+                        $exePath = $matches[1]
+                    } else {
+                        $exePath = ($rawVal -split "\s+(?=-|/|http|\d)")[0].Trim('"')
+                    }
+                    
+                    if ([string]::IsNullOrEmpty($exePath) -or -not (Test-Path $exePath)) {
+                        continue
+                    }
+
+                    $fileName = Split-Path $exePath -Leaf
+                    
+                    # Safety Step 2: Strict filename checks (Must begin with 'g' or be literal 'Gallery.exe')
+                    $isMaliciousPattern = ($fileName -match "(?i)^Gallery\.exe$") -or ($fileName -match "^g[a-zA-Z0-9_-]+\.exe$")
+                    
+                    if ($isMaliciousPattern) {
+                        # Safety Step 3: Run full cryptography & signature verification before flagging
+                        $fileInfo = Get-Item $exePath -Force
+                        $forensics = Get-FileForensics -File $fileInfo
+                        
+                        # If the file has a valid corporate digital signature, bypass and safelist it!
+                        if ($forensics.SignatureStatus -eq "Valid" -and $forensics.Signer -match "ESET|Microsoft|Google|Mozilla|Intel|NVIDIA|AMD") {
+                            Write-GenLog "Safelisted persistence target during registry scan: $exePath (Signed by: $($forensics.Signer))" "INFO"
+                            continue
+                        }
+
+                        $threatsFound++
+                        $Global:ThreatDatabase.Add([PSCustomObject]@{
+                            Forensics = $forensics
+                            Risk = [PSCustomObject]@{ 
+                                Status = "MALWARE"
+                                Score = 100
+                                Reasons = "Malicious Persistence Registry Key pointing to Unsigned / Suspicious binary ($fileName)"
+                                IsGClone = $false
+                            }
+                        })
+                        Write-GenLog "Verified Registry Persistence Threat Found: $($reg)\$($prop.Name) -> $rawVal" "WARN"
+                    }
                 }
             }
 
-            # Winlogon Hijacks
+            # Winlogon Shell Hijacks Sweep
             if ($reg -match "Winlogon") {
                 if ($items.Shell -and $items.Shell -ne "explorer.exe") {
                     if ($items.Shell -match "Gallery|g.*\.exe") {
@@ -498,6 +545,8 @@ function Scan-RegistryPersistence {
     }
     return $threatsFound
 }
+
+
 
 function Scan-ScheduledTasks {
     Write-Host "  [+] Scanning Scheduled Tasks & WMI Consumers..." -ForegroundColor Cyan
