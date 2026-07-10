@@ -49,36 +49,17 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
 
 ولی برای یک ابزار امنیتی مثل **Gallery.Exe.Virus.Remover** نسخه حرفه‌ای‌تر پیشنهاد می‌کنم این باشد:
 
-```markdown
-> [!WARNING]
-> This command downloads and runs a PowerShell script from GitHub.
+> [!NOTE]
+> This command downloads and executes the latest `gallery_lock.ps1` script directly from the official GitHub repository.
 >
-> Although the script is hosted in the official repository, always review the source code before execution.
+> For security reasons, we recommend reviewing the script source code before execution.
 >
-> The command retrieves the latest version from the `main` branch and adds a cache-bypass parameter to prevent outdated CDN content.
+> The command automatically bypasses cached versions and retrieves the latest version from the `main` branch.
 
-*   **INSTALL / REPAIR Gallery Lock Protection**
+*   **To INSTALL or REPAIR the Gallery Lock protection:**
 
 ```powershell
-$url="https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)"
-
-$file="$env:TEMP\gallery_lock_latest.ps1"
-
-Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $file
-
-Get-FileHash $file -Algorithm SHA256
-
-powershell.exe -ExecutionPolicy Bypass -File $file
-
-    
-### 🚨 Troubleshooting: Common Errors
-
-#### Issue: My log is full of `FAIL: Target path is not on an NTFS drive` errors.
-
-If your script output looks exactly like this, with repeated failures:
-
-```
-[INFO] --- Processing Target: User Profile (AppData\Roaming) ---
+iex ((Invoke-WebRequest "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)" -UseBasicParsing).Content)
 [ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
 
 
