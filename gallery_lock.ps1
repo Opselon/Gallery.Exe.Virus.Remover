@@ -547,8 +547,150 @@ function Scan-RegistryPersistence {
 }
 
 
+
+function Get-CLSIDExecutablePath {
+    param([string]$ClassId)
+    if ($ClassId -notmatch "^\{[a-fA-F0-9-]+\}$") { return $null }
+    
+    $hkcuPath = "HKCU:\SOFTWARE\Classes\CLSID\$ClassId\InprocServer32"
+    $hklmPath = "HKLM:\SOFTWARE\Classes\CLSID\$ClassId\InprocServer32"
+    
+    $hkcuDll = $null
+    $hklmDll = $null
+
+    # خواندن مقدار DLL پشتیبان از بخش کاربر (مستعد کامپایل مخفی بدافزار)
+    if (Test-Path $hkcuPath) {
+        $hkcuDll = Get-ItemPropertyValue -Path $hkcuPath -Name "(default)" -ErrorAction SilentlyContinue
+    }
+    # خواندن مقدار DLL پشتیبان از بخش سیستم
+    if (Test-Path $hklmPath) {
+        $hklmDll = Get-ItemPropertyValue -Path $hklmPath -Name "(default)" -ErrorAction SilentlyContinue
+    }
+
+    # تشخیص تکنیک COM Hijacking
+    if ($hkcuDll -and $hklmDll -and ($hkcuDll -ne $hklmDll)) {
+        $resolvedHkcu = [System.Environment]::ExpandEnvironmentVariables($hkcuDll).Trim('"').Trim()
+        # اگر کلید کاربر به مسیری خارج از ویندوز یا یک پوشه با قابلیت نوشتن اشاره کند
+        if ($resolvedHkcu -match "AppData|\\Temp\\|Users\\Public") {
+            Write-GenLog "COM Hijacking Detected on CLSID $ClassId ! HKCU points to $resolvedHkcu while HKLM points to $hklmDll" "CRIT"
+            return [PSCustomObject]@{
+                DllPath = $resolvedHkcu
+                IsHijacked = $true
+                OriginalDll = $hklmDll
+            }
+        }
+    }
+
+    $targetDll = if ($hkcuDll) { $hkcuDll } else { $hklmDll }
+    if ($targetDll) {
+        $resolved = [System.Environment]::ExpandEnvironmentVariables($targetDll).Trim('"').Trim()
+        if ($resolved -match '^%SystemRoot%|^%windir%') {
+            $resolved = $resolved -replace '^%SystemRoot%|^%windir%', $env:SystemRoot
+        }
+        return [PSCustomObject]@{
+            DllPath = $resolved
+            IsHijacked = $false
+            OriginalDll = $null
+        }
+    }
+    return $null
+}
+
+
+function Get-CLSIDExecutablePath {
+    param([string]$ClassId)
+    if ($ClassId -notmatch "^\{[a-fA-F0-9-]+\}$") { return $null }
+    
+    # جستجوی زنجیره‌ای در کندوهای ریجستری برای یافتن DLL پشتیبان COM Handler
+    $clsidPaths = @(
+        "HKLM:\SOFTWARE\Classes\CLSID\$ClassId\InprocServer32",
+        "HKCU:\SOFTWARE\Classes\CLSID\$ClassId\InprocServer32",
+        "HKLM:\SOFTWARE\Classes\Wow6432Node\CLSID\$ClassId\InprocServer32",
+        "HKLM:\SOFTWARE\Wow6432Node\Classes\CLSID\$ClassId\InprocServer32"
+    )
+    
+    foreach ($path in $clsidPaths) {
+        if (Test-Path $path) {
+            $dllPath = Get-ItemPropertyValue -Path $path -Name "(default)" -ErrorAction SilentlyContinue
+            if ($dllPath) {
+                # پاکسازی و توسعه متغیرهای محیطی سیستم
+                $resolved = [System.Environment]::ExpandEnvironmentVariables($dllPath)
+                $resolved = $resolved.Trim('"').Trim()
+                
+                # حل مشکل آدرس‌دهی‌های سیستمی مانند %SystemRoot%
+                if ($resolved -match '^%SystemRoot%|^%windir%') {
+                    $resolved = $resolved -replace '^%SystemRoot%|^%windir%', $env:SystemRoot
+                }
+                
+                # بررسی فیزیکی وجود فایل DLL مربوط به COM Handler
+                if (Test-Path $resolved) { 
+                    return $resolved 
+                }
+            }
+        }
+    }
+    return $null
+}
+
+function Get-TaskCreationEventInfo {
+    param([string]$TaskPath)
+    # استانداردسازی مسیر برای جستجو در ساختار XML رویدادهای ویندوز
+    $cleanPath = "/" + ($TaskPath -replace "^\\", "")
+    $query = "*[System[EventID=106]] and *[EventData[Data[@Name='TaskName']='$cleanPath']]"
+    
+    try {
+        $event = Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -FilterXPath $query -MaxEvents 1 -ErrorAction SilentlyContinue
+        if ($event) {
+            $xml = [xml]$event.ToXml()
+            $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+            $userId = $xml.Event.EventData.Data | Where-Object { $_.Name -eq "UserId" -or $_.Name -eq "UserName" } | Select-Object -ExpandProperty "#text"
+            return [PSCustomObject]@{
+                CreatedTime = $event.TimeCreated
+                CreatedBy   = $userId
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Verify-TaskXMLIntegrity {
+    param([string]$TaskPath, [string]$XmlPath)
+    $baselineDb = Join-Path $Global:GEN_Dir "TaskBaselines.json"
+    if (-not (Test-Path $XmlPath)) { return $true }
+
+    # محاسبه هش کنونی فایل XML تسک
+    $currentHash = "UNKNOWN"
+    try {
+        $stream = [System.IO.File]::OpenRead($XmlPath)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $currentHash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace("-","")
+        $stream.Close()
+    } catch { return $true }
+
+    # بارگذاری یا ایجاد پایگاه داده هش‌ها
+    $baselines = @{}
+    if (Test-Path $baselineDb) {
+        try { $baselines = Get-Content $baselineDb -Raw | ConvertFrom-Json -AsHashtable } catch {}
+    }
+
+    if (-not $baselines.ContainsKey($TaskPath)) {
+        # ثبت اولین هش به عنوان مرجع ایمن (Baseline)
+        $baselines[$TaskPath] = $currentHash
+        $baselines | ConvertTo-Json | Out-File $baselineDb -Force
+        return $true
+    } else {
+        # بررسی تطابق هش با هش مرجع فونداسیون سیستم
+        $expectedHash = $baselines[$TaskPath]
+        if ($currentHash -ne $expectedHash) {
+            Write-GenLog "Integrity Breach: Task XML $TaskPath has been modified! Expected: $expectedHash, Found: $currentHash" "CRIT"
+            return $false
+        }
+    }
+    return $true
+}
+
 function Scan-ScheduledTasks {
-    Write-Host "  [+] Initiating COM-Aware Scheduled Task Forensic Audit..." -ForegroundColor Cyan
+    Write-Host "  [+] Initiating Advanced 10/10 Task Scheduler Forensic Engine..." -ForegroundColor Cyan
     Write-Host "  =====================================================================" -ForegroundColor DarkGray
     $threatsFound = 0
     
@@ -556,14 +698,17 @@ function Scan-ScheduledTasks {
     $tasksKeyPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks"
     $tasksDiskDir = "C:\Windows\System32\Tasks"
 
-    # لیست سخت‌گیرانه تسک‌های مورد اعتماد و واقعی مایکروسافت
-    $strictMicrosoftTasks = @(
-        "SoftwareProtectionPlatform", "Windows Defender", "UpdateOrchestrator", 
-        "Maintenance", "Power Efficiency Diagnostics", "Time Synchronization", 
-        "Chkdsk", "DiskCleanup", "Defrag", "HelloFace"
+    # لایه ۱: لیست حفاظت حداکثری و غیرقابل لمس هسته ویندوز
+    $criticalCoreProtected = @("SoftwareProtectionPlatform", "Windows Defender", "UpdateOrchestrator")
+    
+    # لایه ۲: لیست زیرسیستم‌های مجاز و عمومی مایکروسافت
+    $knownMicrosoftSubsystems = @(
+        "Maintenance", "DiskCleanup", "Chkdsk", "Defrag", "Bluetooth", "Time Synchronization",
+        "Diagnosis", "WindowsUpdate", "Power Efficiency Diagnostics", "Application Experience",
+        "Registry", "SystemRestore", "Speech", "Windows Error Reporting", "TaskScheduler"
     )
 
-    # مرحله ۱: استخراج درخت تسک‌ها از ریجستری
+    # لایه ۳: جمع‌آوری اطلاعات تسک‌های ریجستری
     $regTasks = @()
     if (Test-Path $treePath) {
         $subKeys = Get-ChildItem -Path $treePath -Recurse -ErrorAction SilentlyContinue
@@ -580,7 +725,6 @@ function Scan-ScheduledTasks {
         }
     }
 
-    # مرحله ۲: نقشه‌برداری فایل‌های XML روی دیسک
     $diskTasks = @()
     if (Test-Path $tasksDiskDir) {
         $xmlFiles = Get-ChildItem -Path $tasksDiskDir -File -Recurse -ErrorAction SilentlyContinue
@@ -589,7 +733,6 @@ function Scan-ScheduledTasks {
 
     $evaluatedDiskTasks = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
-    # مرحله ۳: بررسی همزمان دیسک، ریجستری و ارزیابی COM
     foreach ($rt in $regTasks) {
         $score = 0
         $reasons = [System.Collections.Generic.List[string]]::new()
@@ -599,67 +742,89 @@ function Scan-ScheduledTasks {
         $actionExecutables = [System.Collections.Generic.List[string]]::new()
         $commandLineStr = ""
         $comClassId = "N/A"
+        $isHijackedCom = $false
 
-        # بررسی وجود GUID در Tasks
+        # بررسی همبستگی GUID
         $guidKey = Join-Path $tasksKeyPath $rt.GUID
         if (-not (Test-Path $guidKey)) {
             $score += 50
             $isBrokenGuidMapping = $true
-            $reasons.Add("Broken GUID Mapping [Registry entry lacks TaskCache configuration]")
+            $reasons.Add("Broken GUID Mapping [Orphaned task registered in cache]")
         }
 
-        # بررسی وجود فایل فیزیکی XML روی دیسک
+        # بررسی وجود فیزیکی فایل XML تسک
         $xmlPath = Join-Path $tasksDiskDir $rt.Path
         if (-not (Test-Path $xmlPath)) {
             $score += 50
             $isOrphanedRegistry = $true
-            $reasons.Add("Orphaned Registry Entry [No physical XML task file found on disk]")
+            $reasons.Add("Orphaned Registry Mapping [No physical XML configuration found on disk]")
         } else {
             $null = $evaluatedDiskTasks.Add($xmlPath)
         }
 
-        # مرحله ۴: واکاوی عمیق فایل XML برای استخراج کدهای اجرایی و COM Handler
+        # اعتبارسنجی یکپارچگی هش فیزیکی XML (شناسایی دستکاری تسک‌های قانونی مایکروسافت)
         if (-not $isOrphanedRegistry -and (Test-Path $xmlPath)) {
+            if (-not (Verify-TaskXMLIntegrity -TaskPath $rt.Path -XmlPath $xmlPath)) {
+                $score += 75
+                $reasons.Add("Task XML Integrity Breach [File has been modified or tampered with since system baseline]")
+            }
+
             try {
                 [xml]$xml = Get-Content -Path $xmlPath -Raw -ErrorAction SilentlyContinue
                 
-                # واکاوی Exec Actionهای استاندارد
+                # بررسی Exec Actions
                 $execNodes = $xml.SelectNodes("//*[local-name()='Exec']")
                 foreach ($node in $execNodes) {
                     $command = $node.Command
                     if ($command) {
-                        $resolvedCmd = $command.Trim('"')
-                        $resolvedCmd = [System.Environment]::ExpandEnvironmentVariables($resolvedCmd)
+                        $resolvedCmd = [System.Environment]::ExpandEnvironmentVariables($command.Trim('"'))
                         $actionExecutables.Add($resolvedCmd)
                         $commandLineStr += "[EXEC: $resolvedCmd $($node.Arguments)] "
                     }
                 }
 
-                # واکاوی هوشمند COM Handlers (بسیار بحرانی)
+                # بررسی پیشرفته ComHandler Actions (حل مشکل ۱ و ۳)
                 $comNodes = $xml.SelectNodes("//*[local-name()='ComHandler']")
                 foreach ($node in $comNodes) {
                     $classId = $node.ClassId
                     if ($classId) {
                         $comClassId = $classId
-                        $commandLineStr += "[COM Handler: $classId] "
+                        $commandLineStr += "[COM: $classId] "
                         
-                        # حل آدرس فایل DLL فیزیکی مسئول COM Handler
-                        $dllTarget = Get-CLSIDExecutablePath -ClassId $classId
-                        if ($dllTarget) {
-                            $actionExecutables.Add($dllTarget)
+                        # واکاوی رجیستری برای یافتن DLL هدف
+                        $clsidResult = Get-CLSIDExecutablePath -ClassId $classId
+                        if ($clsidResult) {
+                            if ($clsidResult.IsHijacked) {
+                                $isHijackedCom = $true
+                                $score += 100
+                                $reasons.Add("CRITICAL: COM Hijacking Detected! System CLSID hijacked by user DLL ($($clsidResult.DllPath))")
+                            }
+                            $actionExecutables.Add($clsidResult.DllPath)
                         } else {
-                            $score += 45
-                            $reasons.Add("Unregistered COM Class ID [Task uses active ClassID ($classId) with no registered InprocServer32 DLL]")
+                            $score += 40
+                            $reasons.Add("Unregistered CLSID COM Handler ($classId)")
                         }
                     }
                 }
             } catch {
-                $score += 25
-                $reasons.Add("Corrupted Task XML [Parser error reading file structure]")
+                $score += 20
+                $reasons.Add("Task XML parsing error")
             }
         }
 
-        # مرحله ۵: موتور تحلیل چند مرحله‌ای ریسک و اعتبارسنجی فایل‌های اجرایی استخراج‌شده
+        # ردیابی فوت‌پرینت منبع سازنده تسک از لاگ‌های ویندوز
+        $creationInfo = Get-TaskCreationEventInfo -TaskPath $rt.Path
+        $creationDetails = "N/A"
+        if ($creationInfo) {
+            $creationDetails = "Created by $($creationInfo.CreatedBy) at $($creationInfo.CreatedTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+            # جریمه اگر تسک مشکوک در خارج از حساب‌های سیستمی ایجاد شده باشد
+            if ($creationInfo.CreatedBy -notmatch "SYSTEM|LOCAL SERVICE|NETWORK SERVICE|TrustedInstaller" -and $rt.Path -match "Microsoft") {
+                $score += 35
+                $reasons.Add("Suspicious Creator [Microsoft task created by non-system user: $($creationInfo.CreatedBy)]")
+            }
+        }
+
+        # بررسی اصالت و امضاهای دیجیتال فایل‌های استخراج‌شده
         foreach ($exe in $actionExecutables) {
             $resolvedPath = $exe
             if (-not (Split-Path $resolvedPath -IsAbsolute)) {
@@ -673,326 +838,74 @@ function Scan-ScheduledTasks {
             $isWritablePath = $resolvedPath -match "(?i)AppData|\\Temp\\|Users\\Public|systemprofile"
 
             if (Test-Path $resolvedPath) {
-                # دریافت فارنزیک دقیق روی فایل PE اجرایی (نه روی XML تسک!)
                 $fileInfo = Get-Item -Path $resolvedPath -Force -ErrorAction SilentlyContinue
                 $forensics = Get-FileForensics -File $fileInfo
                 
-                # بررسی وضعیت امضا
+                # امضای دیجیتال نامعتبر
                 if ($forensics.SignatureStatus -ne "Valid") {
                     $score += 30
-                    $reasons.Add("Unsigned executable referenced in task actions ($($fileInfo.Name))")
+                    $reasons.Add("Unsigned executable file targeted: $($fileInfo.Name)")
                     if ($isWritablePath) {
                         $score += 50
-                        $reasons.Add("Critical: Unsigned binary operating from user-writable directory")
+                        $reasons.Add("Unsigned binary operating from user-writable execution directory")
                     }
                 } else {
                     if ($forensics.IsMicrosoft -or $forensics.Signer -match "ESET|Google|Mozilla|Intel") {
-                        $score -= 60 # اعمال تخفیف ریسک برای فایل‌های معتبر سیستمی
+                        $score -= 60
                     }
                 }
 
-                # بررسی فریب نام تجاری مایکروسافت
+                # بررسی فریب متادیتا
                 $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($resolvedPath)
                 if ($versionInfo.CompanyName -match "Microsoft" -and -not $forensics.IsMicrosoft) {
-                    $score += 80
-                    $reasons.Add("Fake Metadata: Unsigned binary impersonating Microsoft Corporation")
-                }
-
-                # بررسی رفتارهای شبیه‌ساز Gallery.exe
-                if ($fileInfo.Name -match "^gallery\.exe$" -or $fileInfo.Name -match "^g[a-z0-9_-]+\.exe$") {
-                    $score += 60
-                    $reasons.Add("Malicious Pattern: Target file name matches Gallery.exe payload profile")
+                    $score += 85
+                    $reasons.Add("Metadata Masquerading: Unsigned DLL/EXE mimicking Microsoft brand")
                 }
             } else {
-                # فایلی که در تسک رجیستر شده اما وجود فیزیکی ندارد (بسیار مشکوک)
+                # فایل اجرایی حذف شده (مرحله ۴ ارتقا یافته)
                 if ($isWritablePath) {
-                    $score += 70  # جریمه سنگین برای فایل‌های حذف شده در پوشه‌های کاربر
-                    $reasons.Add("Missing Executable Target: Task references deleted payload in writable path ($resolvedPath)")
+                    $score += 75
+                    $reasons.Add("Orphaned Payload Vector: Task targets deleted executable in writable location")
                 } else {
-                    $score += 35
-                    $reasons.Add("Orphaned Action Target [Executable not found at path: $resolvedPath]")
+                    $score += 30
+                    $reasons.Add("Orphaned Action Path [Executable missing: $resolvedPath]")
                 }
             }
         }
 
-        # بررسی قوانین سخت‌گیرانه Gallery.exe
-        if ($isWritablePath -and ($score -ge 60 -or $comClassId -ne "N/A")) {
-            # اگر تسک در پوشه کاربر است و یا غیرمجاز است یا دارای هاندلر COM مشکوک است نمره ریسک را به ۱۰۰ ارتقا بده
+        # فرمول ارتقای سخت‌گیرانه برای بدافزارهای مخفی (مانند Gallery.exe)
+        if ($isWritablePath -and $score -ge 60) {
             $score = 100
-            $reasons.Add("Polymorphic Persistence Rule: Confirmed custom execution payload vector.")
+            $reasons.Add("Gallery Polymorphic Execution Lock: Confirmed hostile custom payload.")
         }
 
-        # مرحله ۶: فیلتر سخت‌گیرانه تسک‌های مایکروسافت (حذف معافیت‌های فله‌ای مسیر)
-        $isTrueMicrosoft = $false
-        foreach ($msTask in $strictMicrosoftTasks) {
-            if ($rt.Path -match "(?i)$msTask") { $isTrueMicrosoft = $true; break }
-        }
-
-        if (-not $isTrueMicrosoft -and $rt.Path -match "^\\Microsoft\\Windows") {
-            # اگر بدافزار تسکی با مسیر جعلی مایکروسافت ساخته باشد اما جزو تسک‌های سیستمی تایید شده ما نباشد
-            $score += 45
-            $reasons.Add("Path Impersonation: Non-standard task masquerading under Microsoft folder structure")
-        }
-
-        # نهایی‌سازی امتیاز ریسک
-        $finalScore = [math]::Max(0, [math]::Min($score, 100))
-        $status = "SAFE"
-        if ($finalScore -ge 30 -and $finalScore -le 65) { $status = "SUSPICIOUS" }
-        elseif ($finalScore -gt 65) { $status = "MALWARE" }
-
-        # ذخیره تسک‌های مشکوک در بانک اطلاعاتی تهدیدات
-        if ($status -ne "SAFE") {
-            $threatsFound++
-            $Global:ThreatDatabase.Add([PSCustomObject]@{
-                Forensics = [PSCustomObject]@{ 
-                    Path = "Task: $($rt.Path)" 
-                    Name = $rt.Path 
-                    Size = 0 
-                    IsCriticalPath = ($rt.Path -match "(?i)SoftwareProtectionPlatform|Windows Defender|UpdateOrchestrator")
-                    Signer = if ($forensics) { $forensics.Signer } else { "N/A" }
-                    SHA256 = if ($forensics) { $forensics.SHA256 } else { "N/A" }
-                    GUID   = $rt.GUID
-                    XMLPath = $xmlPath
-                }
-                Risk = [PSCustomObject]@{ 
-                    Status = $status 
-                    Score = $finalScore 
-                    Reasons = ($reasons -join " | ") 
-                    IsGClone = ($rt.Path -match "(?i)gallery|\\g.*" -or $commandLineStr -match "gcCleaner|gallery")
-                }
-            })
-            Write-GenLog "Forensic Violation Logged: $($rt.Path) (Risk: $finalScore) - Reasons: $($reasons -join ' , ')" "WARN"
-        }
-    }
-
-    # ثبت تسک‌های یتیم فاقد ریجستری روی دیسک
-    foreach ($dt in $diskTasks) {
-        if (-not $evaluatedDiskTasks.Contains($dt)) {
-            $relativeDiskPath = $dt -replace "^.*System32\\Tasks", ""
-            if ($relativeDiskPath -match "^\\Microsoft\\Windows\\") { continue } 
-
-            $threatsFound++
-            $Global:ThreatDatabase.Add([PSCustomObject]@{
-                Forensics = [PSCustomObject]@{ 
-                    Path = "Task: $relativeDiskPath" 
-                    Name = $relativeDiskPath 
-                    Size = (Get-Item $dt).Length 
-                    IsCriticalPath = $false 
-                    Signer = "N/A" 
-                    SHA256 = "N/A"
-                    GUID   = "UNKNOWN"
-                    XMLPath = $dt
-                }
-                Risk = [PSCustomObject]@{ 
-                    Status = "SUSPICIOUS" 
-                    Score = 65 
-                    Reasons = "Stray Task XML File [File exists in Tasks folder but possesses no Windows TaskCache registration]" 
-                    IsGClone = $false
-                }
-            })
-            Write-GenLog "Stray task on disk found: $relativeDiskPath" "WARN"
-        }
-    }
-
-    Write-Host "  [✓] Forensic Task System Scan Completed." -ForegroundColor Green
-    return $threatsFound
-}
-
-
-function Scan-ScheduledTasks {
-    Write-Host "  [+] Initiating COM-Aware Scheduled Task Forensic Audit..." -ForegroundColor Cyan
-    Write-Host "  =====================================================================" -ForegroundColor DarkGray
-    $threatsFound = 0
-    
-    $treePath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"
-    $tasksKeyPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks"
-    $tasksDiskDir = "C:\Windows\System32\Tasks"
-
-    # لیست سخت‌گیرانه تسک‌های مورد اعتماد و واقعی مایکروسافت
-    $strictMicrosoftTasks = @(
-        "SoftwareProtectionPlatform", "Windows Defender", "UpdateOrchestrator", 
-        "Maintenance", "Power Efficiency Diagnostics", "Time Synchronization", 
-        "Chkdsk", "DiskCleanup", "Defrag", "HelloFace"
-    )
-
-    # مرحله ۱: استخراج درخت تسک‌ها از ریجستری
-    $regTasks = @()
-    if (Test-Path $treePath) {
-        $subKeys = Get-ChildItem -Path $treePath -Recurse -ErrorAction SilentlyContinue
-        foreach ($key in $subKeys) {
-            $idVal = Get-ItemPropertyValue -Path $key.PSPath -Name "Id" -ErrorAction SilentlyContinue
-            if ($idVal) {
-                $relativePath = $key.PSPath -replace "^.*Schedule\\TaskCache\\Tree", ""
-                $regTasks += [PSCustomObject]@{
-                    Path        = $relativePath
-                    GUID        = $idVal
-                    RegistryKey = $key.PSPath
-                }
-            }
-        }
-    }
-
-    # مرحله ۲: نقشه‌برداری فایل‌های XML روی دیسک
-    $diskTasks = @()
-    if (Test-Path $tasksDiskDir) {
-        $xmlFiles = Get-ChildItem -Path $tasksDiskDir -File -Recurse -ErrorAction SilentlyContinue
-        foreach ($file in $xmlFiles) { $diskTasks += $file.FullName }
-    }
-
-    $evaluatedDiskTasks = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-
-    # مرحله ۳: بررسی همزمان دیسک، ریجستری و ارزیابی COM
-    foreach ($rt in $regTasks) {
-        $score = 0
-        $reasons = [System.Collections.Generic.List[string]]::new()
-        $isOrphanedRegistry = $false
-        $isBrokenGuidMapping = $false
+        # پیاده‌سازی مکانیزم اعتبارسنجی چند لایه مایکروسافت (حل مشکل ۲)
+        $isCoreProtected = $false
+        $isKnownSubsystem = $false
         
-        $actionExecutables = [System.Collections.Generic.List[string]]::new()
-        $commandLineStr = ""
-        $comClassId = "N/A"
-
-        # بررسی وجود GUID در Tasks
-        $guidKey = Join-Path $tasksKeyPath $rt.GUID
-        if (-not (Test-Path $guidKey)) {
-            $score += 50
-            $isBrokenGuidMapping = $true
-            $reasons.Add("Broken GUID Mapping [Registry entry lacks TaskCache configuration]")
+        foreach ($core in $criticalCoreProtected) {
+            if ($rt.Path -match "(?i)$core") { $isCoreProtected = $true; break }
+        }
+        foreach ($sub in $knownMicrosoftSubsystems) {
+            if ($rt.Path -match "(?i)$sub") { $isKnownSubsystem = $true; break }
         }
 
-        # بررسی وجود فایل فیزیکی XML روی دیسک
-        $xmlPath = Join-Path $tasksDiskDir $rt.Path
-        if (-not (Test-Path $xmlPath)) {
-            $score += 50
-            $isOrphanedRegistry = $true
-            $reasons.Add("Orphaned Registry Entry [No physical XML task file found on disk]")
-        } else {
-            $null = $evaluatedDiskTasks.Add($xmlPath)
+        # اگر تسک ادعا می‌کند متعلق به مایکروسافت است اما با لایه‌های معتبر ما تطبیق ندارد
+        if ($rt.Path -match "^\\Microsoft\\Windows" -and -not $isCoreProtected -not $isKnownSubsystem) {
+            $score += 35
+            $reasons.Add("System Folder Masquerade: Unrecognized task located under HKLM Microsoft structure")
         }
 
-        # مرحله ۴: واکاوی عمیق فایل XML برای استخراج کدهای اجرایی و COM Handler
-        if (-not $isOrphanedRegistry -and (Test-Path $xmlPath)) {
-            try {
-                [xml]$xml = Get-Content -Path $xmlPath -Raw -ErrorAction SilentlyContinue
-                
-                # واکاوی Exec Actionهای استاندارد
-                $execNodes = $xml.SelectNodes("//*[local-name()='Exec']")
-                foreach ($node in $execNodes) {
-                    $command = $node.Command
-                    if ($command) {
-                        $resolvedCmd = $command.Trim('"')
-                        $resolvedCmd = [System.Environment]::ExpandEnvironmentVariables($resolvedCmd)
-                        $actionExecutables.Add($resolvedCmd)
-                        $commandLineStr += "[EXEC: $resolvedCmd $($node.Arguments)] "
-                    }
-                }
-
-                # واکاوی هوشمند COM Handlers (بسیار بحرانی)
-                $comNodes = $xml.SelectNodes("//*[local-name()='ComHandler']")
-                foreach ($node in $comNodes) {
-                    $classId = $node.ClassId
-                    if ($classId) {
-                        $comClassId = $classId
-                        $commandLineStr += "[COM Handler: $classId] "
-                        
-                        # حل آدرس فایل DLL فیزیکی مسئول COM Handler
-                        $dllTarget = Get-CLSIDExecutablePath -ClassId $classId
-                        if ($dllTarget) {
-                            $actionExecutables.Add($dllTarget)
-                        } else {
-                            $score += 45
-                            $reasons.Add("Unregistered COM Class ID [Task uses active ClassID ($classId) with no registered InprocServer32 DLL]")
-                        }
-                    }
-                }
-            } catch {
-                $score += 25
-                $reasons.Add("Corrupted Task XML [Parser error reading file structure]")
-            }
+        # جلوگیری از آسیب دیدن تسک‌های هسته ویندوز بجز در اثبات قطعی بدافزار
+        if ($isCoreProtected -and $score -lt 85) {
+            continue 
         }
 
-        # مرحله ۵: موتور تحلیل چند مرحله‌ای ریسک و اعتبارسنجی فایل‌های اجرایی استخراج‌شده
-        foreach ($exe in $actionExecutables) {
-            $resolvedPath = $exe
-            if (-not (Split-Path $resolvedPath -IsAbsolute)) {
-                $envPaths = $env:PATH -split ";"
-                foreach ($p in $envPaths) {
-                    $candidate = Join-Path $p $resolvedPath
-                    if (Test-Path $candidate) { $resolvedPath = $candidate; break }
-                }
-            }
-
-            $isWritablePath = $resolvedPath -match "(?i)AppData|\\Temp\\|Users\\Public|systemprofile"
-
-            if (Test-Path $resolvedPath) {
-                # دریافت فارنزیک دقیق روی فایل PE اجرایی (نه روی XML تسک!)
-                $fileInfo = Get-Item -Path $resolvedPath -Force -ErrorAction SilentlyContinue
-                $forensics = Get-FileForensics -File $fileInfo
-                
-                # بررسی وضعیت امضا
-                if ($forensics.SignatureStatus -ne "Valid") {
-                    $score += 30
-                    $reasons.Add("Unsigned executable referenced in task actions ($($fileInfo.Name))")
-                    if ($isWritablePath) {
-                        $score += 50
-                        $reasons.Add("Critical: Unsigned binary operating from user-writable directory")
-                    }
-                } else {
-                    if ($forensics.IsMicrosoft -or $forensics.Signer -match "ESET|Google|Mozilla|Intel") {
-                        $score -= 60 # اعمال تخفیف ریسک برای فایل‌های معتبر سیستمی
-                    }
-                }
-
-                # بررسی فریب نام تجاری مایکروسافت
-                $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($resolvedPath)
-                if ($versionInfo.CompanyName -match "Microsoft" -and -not $forensics.IsMicrosoft) {
-                    $score += 80
-                    $reasons.Add("Fake Metadata: Unsigned binary impersonating Microsoft Corporation")
-                }
-
-                # بررسی رفتارهای شبیه‌ساز Gallery.exe
-                if ($fileInfo.Name -match "^gallery\.exe$" -or $fileInfo.Name -match "^g[a-z0-9_-]+\.exe$") {
-                    $score += 60
-                    $reasons.Add("Malicious Pattern: Target file name matches Gallery.exe payload profile")
-                }
-            } else {
-                # فایلی که در تسک رجیستر شده اما وجود فیزیکی ندارد (بسیار مشکوک)
-                if ($isWritablePath) {
-                    $score += 70  # جریمه سنگین برای فایل‌های حذف شده در پوشه‌های کاربر
-                    $reasons.Add("Missing Executable Target: Task references deleted payload in writable path ($resolvedPath)")
-                } else {
-                    $score += 35
-                    $reasons.Add("Orphaned Action Target [Executable not found at path: $resolvedPath]")
-                }
-            }
-        }
-
-        # بررسی قوانین سخت‌گیرانه Gallery.exe
-        if ($isWritablePath -and ($score -ge 60 -or $comClassId -ne "N/A")) {
-            # اگر تسک در پوشه کاربر است و یا غیرمجاز است یا دارای هاندلر COM مشکوک است نمره ریسک را به ۱۰۰ ارتقا بده
-            $score = 100
-            $reasons.Add("Polymorphic Persistence Rule: Confirmed custom execution payload vector.")
-        }
-
-        # مرحله ۶: فیلتر سخت‌گیرانه تسک‌های مایکروسافت (حذف معافیت‌های فله‌ای مسیر)
-        $isTrueMicrosoft = $false
-        foreach ($msTask in $strictMicrosoftTasks) {
-            if ($rt.Path -match "(?i)$msTask") { $isTrueMicrosoft = $true; break }
-        }
-
-        if (-not $isTrueMicrosoft -and $rt.Path -match "^\\Microsoft\\Windows") {
-            # اگر بدافزار تسکی با مسیر جعلی مایکروسافت ساخته باشد اما جزو تسک‌های سیستمی تایید شده ما نباشد
-            $score += 45
-            $reasons.Add("Path Impersonation: Non-standard task masquerading under Microsoft folder structure")
-        }
-
-        # نهایی‌سازی امتیاز ریسک
         $finalScore = [math]::Max(0, [math]::Min($score, 100))
         $status = "SAFE"
         if ($finalScore -ge 30 -and $finalScore -le 65) { $status = "SUSPICIOUS" }
         elseif ($finalScore -gt 65) { $status = "MALWARE" }
 
-        # ذخیره تسک‌های مشکوک در بانک اطلاعاتی تهدیدات
         if ($status -ne "SAFE") {
             $threatsFound++
             $Global:ThreatDatabase.Add([PSCustomObject]@{
@@ -1000,11 +913,12 @@ function Scan-ScheduledTasks {
                     Path = "Task: $($rt.Path)" 
                     Name = $rt.Path 
                     Size = 0 
-                    IsCriticalPath = ($rt.Path -match "(?i)SoftwareProtectionPlatform|Windows Defender|UpdateOrchestrator")
+                    IsCriticalPath = $isCoreProtected
                     Signer = if ($forensics) { $forensics.Signer } else { "N/A" }
                     SHA256 = if ($forensics) { $forensics.SHA256 } else { "N/A" }
                     GUID   = $rt.GUID
                     XMLPath = $xmlPath
+                    CreatedDetails = $creationDetails
                 }
                 Risk = [PSCustomObject]@{ 
                     Status = $status 
@@ -1013,15 +927,15 @@ function Scan-ScheduledTasks {
                     IsGClone = ($rt.Path -match "(?i)gallery|\\g.*" -or $commandLineStr -match "gcCleaner|gallery")
                 }
             })
-            Write-GenLog "Forensic Violation Logged: $($rt.Path) (Risk: $finalScore) - Reasons: $($reasons -join ' , ')" "WARN"
+            Write-GenLog "Forensic Flagged Task: $($rt.Path) - Score: $finalScore - Source: $creationDetails - Reasons: $($reasons -join ' , ')" "WARN"
         }
     }
 
-    # ثبت تسک‌های یتیم فاقد ریجستری روی دیسک
+    # شناسایی و ردیابی فایل‌های فیزیکی رها شده روی هارد
     foreach ($dt in $diskTasks) {
         if (-not $evaluatedDiskTasks.Contains($dt)) {
             $relativeDiskPath = $dt -replace "^.*System32\\Tasks", ""
-            if ($relativeDiskPath -match "^\\Microsoft\\Windows\\") { continue } 
+            if ($relativeDiskPath -match "^\\Microsoft\\") { continue } 
 
             $threatsFound++
             $Global:ThreatDatabase.Add([PSCustomObject]@{
@@ -1034,21 +948,23 @@ function Scan-ScheduledTasks {
                     SHA256 = "N/A"
                     GUID   = "UNKNOWN"
                     XMLPath = $dt
+                    CreatedDetails = "Disk Stray XML"
                 }
                 Risk = [PSCustomObject]@{ 
                     Status = "SUSPICIOUS" 
                     Score = 65 
-                    Reasons = "Stray Task XML File [File exists in Tasks folder but possesses no Windows TaskCache registration]" 
+                    Reasons = "Stray File remnant [XML exists in tasks directory with no registered Registry keys]" 
                     IsGClone = $false
                 }
             })
-            Write-GenLog "Stray task on disk found: $relativeDiskPath" "WARN"
+            Write-GenLog "Stray task on disk mapped: $relativeDiskPath" "WARN"
         }
     }
 
-    Write-Host "  [✓] Forensic Task System Scan Completed." -ForegroundColor Green
+    Write-Host "  [✓] Complete Forensic Task Systems Audit Completed." -ForegroundColor Green
     return $threatsFound
 }
+
 
 # ==============================================================================
 # [10] MASTER DEEP FILE SCANNER
