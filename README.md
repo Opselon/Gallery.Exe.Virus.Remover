@@ -51,7 +51,7 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
 
 *   **To INSTALL or REPAIR the lock:**
     ```powershell
-    iex ((iwr -Uri "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/main/scripts/gallery_lock.ps1" -UseBasicParsing).Content)
+iex ((iwr "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)" -UseBasicParsing).Content)
     ```
 
     
