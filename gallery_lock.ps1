@@ -1200,15 +1200,14 @@ function Remove-IcoClone {
 # ==============================================================================
 # [12] THREAT CLEANUP & RECOVERY UI
 # ==============================================================================
-
 function Show-ThreatCard {
     param($Threat)
     
     $color = if ($Threat.Risk.Score -gt 80) { "Red" } elseif ($Threat.Risk.Score -gt 50) { "Magenta" } else { "Yellow" }
     
-    # Text-wrapping helper to ensure long paths never breach the border
+    # تابع کمکی امن برای تراز کردن متون بدون تداخل با قوانین StrictMode
     function Get-WrappedLines {
-        param([string]$text, [int]$width = 62)
+        param([string]$text, [int]$width = 66)
         if ([string]::IsNullOrEmpty($text)) { return @("") }
         $lines = @()
         for ($i = 0; $i -lt $text.Length; $i += $width) {
@@ -1218,45 +1217,49 @@ function Show-ThreatCard {
         return $lines
     }
 
-    # Format fields
+    # موتور پویا و ریاضی‌محور تراز کادرها (عرض کل بخش داخلی دقیقاً ۷۸ کاراکتر است)
+    function Write-ThreatRow {
+        param([string]$Label, [string]$Value, $RowColor, $ValueColor)
+        $labelWidth = 12
+        $valWidth = 78 - $labelWidth
+        
+        $wrapped = Get-WrappedLines -text $Value -width $valWidth
+        $firstLine = if ($wrapped.Count -gt 0) { $wrapped[0] } else { "" }
+        
+        Write-Host "  ║ " -ForegroundColor $RowColor -NoNewline
+        Write-Host ($Label.PadRight($labelWidth)) -ForegroundColor Cyan -NoNewline
+        Write-Host ($firstLine.PadRight($valWidth)) -ForegroundColor $ValueColor -NoNewline
+        Write-Host "║" -ForegroundColor $RowColor
+        
+        for ($i = 1; $i -lt $wrapped.Count; $i++) {
+            Write-Host "  ║ " -ForegroundColor $RowColor -NoNewline
+            Write-Host (" " * $labelWidth) -NoNewline
+            Write-Host ($wrapped[$i].PadRight($valWidth)) -ForegroundColor $ValueColor -NoNewline
+            Write-Host "║" -ForegroundColor $RowColor
+        }
+    }
+
+    # آماده‌سازی و فرمت فیلدها
     $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task)" }
     $signerText = "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]"
     $riskText = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]"
+    $hashVal = if ($Threat.Forensics.SHA256) { $Threat.Forensics.SHA256 } else { "N/A" }
 
+    # چاپ کادر اصلی تراز شده به عرض دقیق ۸۴ کاراکتر
     Write-Host "  ╔══════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $color
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ACTIVE THREAT IDENTIFIED                                                     " -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
     Write-Host "  ╠══════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor $color
     
-    # Display Wrapped Path
-    $wrappedPath = Get-WrappedLines -text $Threat.Forensics.Path -width 62
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Full Path : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedPath[0].PadRight(62)) -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
-    for ($i = 1; $i -lt $wrappedPath.Count; $i++) {
-        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedPath[$i].PadRight(62)) -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
-    }
-
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "File Size : " -ForegroundColor Cyan -NoNewline; Write-Host ($sizeText.PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    
-    # Display Wrapped SHA256
-    $hashVal = if ($Threat.Forensics.SHA256) { $Threat.Forensics.SHA256 } else { "N/A" }
-    $wrappedHash = Get-WrappedLines -text $hashVal -width 62
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "SHA256    : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedHash[0].PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    for ($i = 1; $i -lt $wrappedHash.Count; $i++) {
-        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedHash[$i].PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    }
-
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Signature : " -ForegroundColor Cyan -NoNewline; Write-Host ($signerText.PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Risk Lvl  : " -ForegroundColor Cyan -NoNewline; Write-Host ($riskText.PadRight(62)) -ForegroundColor Red -NoNewline; Write-Host "║" -ForegroundColor $color
-    
-    # Display Wrapped Heuristic Flags/Reasons
-    $wrappedReasons = Get-WrappedLines -text $Threat.Risk.Reasons -width 62
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Reasons   : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedReasons[0].PadRight(62)) -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
-    for ($i = 1; $i -lt $wrappedReasons.Count; $i++) {
-        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedReasons[$i].PadRight(62)) -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
-    }
+    # چاپ فیلدهای اطلاعاتی با استفاده از موتور تراز پویا
+    Write-ThreatRow -Label "Full Path : " -Value $Threat.Forensics.Path -RowColor $color -ValueColor White
+    Write-ThreatRow -Label "File Size : " -Value $sizeText -RowColor $color -ValueColor Gray
+    Write-ThreatRow -Label "SHA256    : " -Value $hashVal -RowColor $color -ValueColor Gray
+    Write-ThreatRow -Label "Signature : " -Value $signerText -RowColor $color -ValueColor Gray
+    Write-ThreatRow -Label "Risk Lvl  : " -Value $riskText -RowColor $color -ValueColor Red
+    Write-ThreatRow -Label "Reasons   : " -Value $Threat.Risk.Reasons -RowColor $color -ValueColor Yellow
 
     Write-Host "  ╚══════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
-
 function Invoke-CleanupEngine {
     Show-GenHeader
     Write-Host "  [🧹] INITIATING THREAT NEUTRALIZATION & RECOVERY PROTOCOL" -ForegroundColor Red
@@ -1302,7 +1305,7 @@ function Invoke-CleanupEngine {
         if ($action -match "^[Aa]") { $autoCleanAll = $true; $action = "Q" }
 
         switch -Regex ($action) {
-          "^[Yy]" {
+            "^[Yy]" {
                 if ($threat.Forensics.Path -match "^Registry:") {
                     Write-Host "  [~] Trace: Parsing Registry target..." -ForegroundColor DarkGray
                     $cleanRegString = $threat.Forensics.Path -replace "^Registry:\s*", ""
@@ -1345,20 +1348,57 @@ function Invoke-CleanupEngine {
                     }
                     
                 } elseif ($threat.Forensics.Path -match "^Task:") {
-                    Write-Host "  [~] Trace: Targeting Scheduled Task [$($threat.Forensics.Name)]..." -ForegroundColor DarkGray
-                    Write-GenLog "Attempting to delete scheduled task: $($threat.Forensics.Name)" "INFO"
+                    Write-Host "  [~] Trace: Initiating Secure Task Remediation for [$($threat.Forensics.Name)]..." -ForegroundColor DarkGray
+                    Write-GenLog "Initiating Secure Remediation Workflow for Task: $($threat.Forensics.Name)" "INFO"
                     
+                    $cleanTaskName = $threat.Forensics.Name -replace "^Task:\s*|^\\", ""
+                    $guid = $threat.Forensics.GUID
+                    $xmlPath = $threat.Forensics.XMLPath
+                    
+                    # مرحله ۱: ایجاد دایرکتوری‌های بک‌آب ایمن سیستمی و دسکتاپ کاربر
+                    $timestamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+                    $folderName = "Task_$($cleanTaskName -replace '\\','_')_$timestamp"
+                    $backupEnclaveDir = Join-Path "C:\SecurityBackup\ScheduledTasks" $folderName
+                    New-Item -Path $backupEnclaveDir -ItemType Directory -Force | Out-Null
+                    
+                    # ایجاد پوشه خروجی روی دسکتاپ کاربر برای اطمینان خاطر ۱۰۰٪
+                    $desktopPath = [System.IO.Path]::Combine([System.Environment]::GetFolderPath("Desktop"), "GEN_Registry_Backups")
+                    $desktopBackupDir = Join-Path $desktopPath $folderName
+                    New-Item -Path $desktopBackupDir -ItemType Directory -Force | Out-Null
+                    
+                    Write-Host "  [+] Step 1: Secure Registry Backups created on your Desktop (GEN_Registry_Backups)!" -ForegroundColor Green
+                    
+                    # پشتیبان‌گیری فیزیکی از فایل XML تسک
+                    if ($xmlPath -and (Test-Path $xmlPath)) {
+                        Copy-Item -Path $xmlPath -Destination (Join-Path $backupEnclaveDir "TaskDefinition.xml") -Force -ErrorAction SilentlyContinue
+                        Copy-Item -Path $xmlPath -Destination (Join-Path $desktopBackupDir "TaskDefinition.xml") -Force -ErrorAction SilentlyContinue
+                    }
+                    
+                    # خروجی مستقیم کلیدهای ریجستری به صورت فایل .reg قابل بازگردانی به دو مقصد سیستمی و دسکتاپ
+                    $regTreePath = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName"
+                    $regTaskPath = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\$guid"
+                    
+                    if (Test-Path ("HKLM:\" + ($regTreePath -replace "^HKLM\\", ""))) {
+                        reg.exe export "$regTreePath" (Join-Path $backupEnclaveDir "Registry_Tree.reg") /y 2>&1 | Out-Null
+                        reg.exe export "$regTreePath" (Join-Path $desktopBackupDir "Registry_Tree.reg") /y 2>&1 | Out-Null
+                    }
+                    if ($guid -and $guid -ne "UNKNOWN" -and (Test-Path ("HKLM:\" + ($regTaskPath -replace "^HKLM\\", "")))) {
+                        reg.exe export "$regTaskPath" (Join-Path $backupEnclaveDir "Registry_Task.reg") /y 2>&1 | Out-Null
+                        reg.exe export "$regTaskPath" (Join-Path $desktopBackupDir "Registry_Task.reg") /y 2>&1 | Out-Null
+                    }
+
                     $success = $false
+                    
                     # Attempt 1: Standard schtasks
                     Write-Host "  [~] Tier 1: Attempting Standard API Task Deletion..." -ForegroundColor DarkGray
-                    $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$($threat.Forensics.Name)`" /F" -Wait -NoNewWindow -PassThru
+                    $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$cleanTaskName`" /F" -Wait -NoNewWindow -PassThru
                     if ($schProc.ExitCode -eq 0) { $success = $true }
                     
                     # Attempt 2: Native Cmdlet Backup
                     if (-not $success) {
                         Write-Host "  [!] Tier 1 Failed. Engaging Tier 2 (Native PowerShell Command)..." -ForegroundColor Yellow
                         try {
-                            Unregister-ScheduledTask -TaskName ($threat.Forensics.Name -replace "^\\", "") -Confirm:$false -ErrorAction Stop
+                            Unregister-ScheduledTask -TaskName $cleanTaskName -Confirm:$false -ErrorAction Stop
                             $success = $true
                         } catch {}
                     }
@@ -1367,20 +1407,17 @@ function Invoke-CleanupEngine {
                     if (-not $success) {
                         Write-Host "  [!] Tier 2 Failed (Access Denied). Engaging Tier 3 (Physical Disk & Registry Core Wipe)..." -ForegroundColor Red
                         try {
-                            $cleanTaskName = $threat.Forensics.Name -replace "^\\", ""
-                            
                             # Physical Task File Deletion
-                            $taskFilePath = Join-Path "C:\Windows\System32\Tasks" $cleanTaskName
-                            if (Test-Path $taskFilePath) {
-                                takeown.exe /F "`"$taskFilePath`"" /A 2>&1 | Out-Null
-                                icacls.exe "`"$taskFilePath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
-                                Remove-Item -Path $taskFilePath -Force -ErrorAction SilentlyContinue
+                            if ($xmlPath -and (Test-Path $xmlPath)) {
+                                takeown.exe /F "`"$xmlPath`"" /A 2>&1 | Out-Null
+                                icacls.exe "`"$xmlPath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                                [System.IO.File]::Delete($xmlPath)
                             }
                             
                             # Registry entries sweep (Direct Hive deletion)
                             $regPaths = @(
                                 "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName",
-                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks" # Associated GUID keys
+                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\$guid"
                             )
                             foreach ($rp in $regPaths) {
                                 if (Test-Path $rp) {
@@ -1397,7 +1434,7 @@ function Invoke-CleanupEngine {
 
                     if ($success) {
                         Write-Host "  [+] Scheduled Task Purged and Wiped Successfully." -ForegroundColor Green
-                        Write-GenLog "Successfully deleted scheduled task: $($threat.Forensics.Name)" "INFO"
+                        Write-GenLog "Successfully deleted scheduled task: $cleanTaskName" "INFO"
                         $cleanedCount++
                     } else {
                         Write-Host "  [-] Failed to purge task." -ForegroundColor Red
