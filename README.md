@@ -60,11 +60,6 @@ For ultimate convenience, you can run Gallery-Lock directly from the web. Open a
 
 ```powershell
 iex ((Invoke-WebRequest "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)" -UseBasicParsing).Content)
-[ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
-
-
-
-... (and so on for all targets)
 ```
 
 #### **Diagnosis: This log is absolute proof you are running the script in a standard Administrator PowerShell, NOT a SYSTEM-level PowerShell.**
