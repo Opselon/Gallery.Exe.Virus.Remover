@@ -765,34 +765,54 @@ function Show-ThreatCard {
     
     $color = if ($Threat.Risk.Score -gt 80) { "Red" } elseif ($Threat.Risk.Score -gt 50) { "Magenta" } else { "Yellow" }
     
-    # Helper to truncate and pad strings so the UI box NEVER breaks alignment
-    function Format-PadRight($str, $len) {
-        if ([string]::IsNullOrEmpty($str)) { return " " * $len }
-        if ($str.Length -gt $len) { return $str.Substring(0, $len - 3) + "..." }
-        return $str.PadRight($len)
+    # Text-wrapping helper to ensure long paths never breach the border
+    function Get-WrappedLines {
+        param([string]$text, [int]$width = 62)
+        if ([string]::IsNullOrEmpty($text)) { return @("") }
+        $lines = @()
+        for ($i = 0; $i -lt $text.Length; $i += $width) {
+            $len = [math]::Min($width, $text.Length - $i)
+            $lines += $text.Substring($i, $len)
+        }
+        return $lines
     }
 
-    $pathStr = Format-PadRight $Threat.Forensics.Path 64
-    $hashStr = if ($Threat.Forensics.SHA256) { Format-PadRight $Threat.Forensics.SHA256 64 } else { Format-PadRight "N/A" 64 }
-    
+    # Format fields
     $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task)" }
-    $sizeStr  = Format-PadRight $sizeText 64
-
-    $signerPad = Format-PadRight "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]" 64
-    $riskPad   = Format-PadRight "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]" 64
-    $flagsPad  = Format-PadRight $Threat.Risk.Reasons 64
+    $signerText = "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]"
+    $riskText = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]"
 
     Write-Host "  ╔══════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $color
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ACTIVE THREAT IDENTIFIED                                                     " -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
     Write-Host "  ╠══════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor $color
     
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Full Path : " -ForegroundColor Cyan -NoNewline; Write-Host $pathStr -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "File Size : " -ForegroundColor Cyan -NoNewline; Write-Host $sizeStr -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "SHA256    : " -ForegroundColor Cyan -NoNewline; Write-Host $hashStr -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Signature : " -ForegroundColor Cyan -NoNewline; Write-Host $signerPad -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Risk Lvl  : " -ForegroundColor Cyan -NoNewline; Write-Host $riskPad -ForegroundColor Red -NoNewline; Write-Host "║" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Flags     : " -ForegroundColor Cyan -NoNewline; Write-Host $flagsPad -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
+    # Display Wrapped Path
+    $wrappedPath = Get-WrappedLines -text $Threat.Forensics.Path -width 62
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Full Path : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedPath[0].PadRight(62)) -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
+    for ($i = 1; $i -lt $wrappedPath.Count; $i++) {
+        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedPath[$i].PadRight(62)) -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
+    }
+
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "File Size : " -ForegroundColor Cyan -NoNewline; Write-Host ($sizeText.PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
     
+    # Display Wrapped SHA256
+    $hashVal = if ($Threat.Forensics.SHA256) { $Threat.Forensics.SHA256 } else { "N/A" }
+    $wrappedHash = Get-WrappedLines -text $hashVal -width 62
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "SHA256    : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedHash[0].PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
+    for ($i = 1; $i -lt $wrappedHash.Count; $i++) {
+        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedHash[$i].PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
+    }
+
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Signature : " -ForegroundColor Cyan -NoNewline; Write-Host ($signerText.PadRight(62)) -ForegroundColor Gray -NoNewline; Write-Host "║" -ForegroundColor $color
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Risk Lvl  : " -ForegroundColor Cyan -NoNewline; Write-Host ($riskText.PadRight(62)) -ForegroundColor Red -NoNewline; Write-Host "║" -ForegroundColor $color
+    
+    # Display Wrapped Heuristic Flags/Reasons
+    $wrappedReasons = Get-WrappedLines -text $Threat.Risk.Reasons -width 62
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "Reasons   : " -ForegroundColor Cyan -NoNewline; Write-Host ($wrappedReasons[0].PadRight(62)) -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
+    for ($i = 1; $i -lt $wrappedReasons.Count; $i++) {
+        Write-Host "  ║             " -ForegroundColor $color -NoNewline; Write-Host ($wrappedReasons[$i].PadRight(62)) -ForegroundColor Yellow -NoNewline; Write-Host "║" -ForegroundColor $color
+    }
+
     Write-Host "  ╚══════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
 
@@ -841,11 +861,9 @@ function Invoke-CleanupEngine {
         if ($action -match "^[Aa]") { $autoCleanAll = $true; $action = "Q" }
 
         switch -Regex ($action) {
-            "^[Yy]" {
+          "^[Yy]" {
                 if ($threat.Forensics.Path -match "^Registry:") {
                     Write-Host "  [~] Trace: Parsing Registry target..." -ForegroundColor DarkGray
-                    
-                    # Safely isolate the exact Registry path and Value Name without breaking on HKLM: colons
                     $cleanRegString = $threat.Forensics.Path -replace "^Registry:\s*", ""
                     $regPath = Split-Path $cleanRegString -Parent
                     $valName = Split-Path $cleanRegString -Leaf
@@ -854,33 +872,94 @@ function Invoke-CleanupEngine {
                     Write-Host "  [~] Trace: Target Value -> $valName" -ForegroundColor DarkGray
                     Write-GenLog "Attempting to purge registry key: Path='$regPath', Value='$valName'" "INFO"
                     
-                    try {
-                        Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
+                    # Retry Loop for Locked Registry keys
+                    $success = $false
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        try {
+                            Write-Host "  [~] Purge Attempt $attempt of 3..." -ForegroundColor DarkGray
+                            Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
+                            $success = $true
+                            break
+                        } catch {
+                            Write-Host "  [!] Attempt $attempt Failed: Access Denied. Attempting security descriptor override..." -ForegroundColor Yellow
+                            # Take ownership of key and grant Administrators full control
+                            try {
+                                $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(($regPath -replace "^HKLM:\\", ""), [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]::TakeOwnership)
+                                $acl = $regKey.GetAccessControl()
+                                $acl.SetOwner([System.Security.Principal.NTAccount]"Administrators")
+                                $regKey.SetAccessControl($acl)
+                                
+                                $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule("Administrators", "FullControl", "Allow")))
+                                $regKey.SetAccessControl($acl)
+                            } catch {}
+                            Start-Sleep -Milliseconds 300
+                        }
+                    }
+                    if ($success) {
                         Write-Host "  [+] Persistence Key Purged Successfully." -ForegroundColor Green
                         Write-GenLog "Successfully deleted registry value: $valName at $regPath" "INFO"
                         $cleanedCount++
-                    } catch { 
-                        Write-Host "  [-] Failed to purge registry key: $($_.Exception.Message)" -ForegroundColor Red 
-                        Write-GenLog "Registry purge failed for $cleanRegString : $($_.Exception.Message)" "ERROR"
+                    } else {
+                        Write-Host "  [-] Failed to purge registry key after multiple elevation overrides." -ForegroundColor Red
                     }
                     
                 } elseif ($threat.Forensics.Path -match "^Task:") {
                     Write-Host "  [~] Trace: Targeting Scheduled Task [$($threat.Forensics.Name)]..." -ForegroundColor DarkGray
                     Write-GenLog "Attempting to delete scheduled task: $($threat.Forensics.Name)" "INFO"
                     
-                    try {
-                        # Using Start-Process for schtasks ensures we can capture the exit code for the trace
-                        $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$($threat.Forensics.Name)`" /F" -Wait -NoNewWindow -PassThru
-                        if ($schProc.ExitCode -eq 0) {
-                            Write-Host "  [+] Scheduled Task Purged Successfully." -ForegroundColor Green
-                            Write-GenLog "Successfully deleted scheduled task: $($threat.Forensics.Name)" "INFO"
-                            $cleanedCount++
-                        } else {
-                            throw "schtasks.exe returned error code $($schProc.ExitCode)"
+                    $success = $false
+                    # Attempt 1: Standard schtasks
+                    Write-Host "  [~] Tier 1: Attempting Standard API Task Deletion..." -ForegroundColor DarkGray
+                    $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$($threat.Forensics.Name)`" /F" -Wait -NoNewWindow -PassThru
+                    if ($schProc.ExitCode -eq 0) { $success = $true }
+                    
+                    # Attempt 2: Native Cmdlet Backup
+                    if (-not $success) {
+                        Write-Host "  [!] Tier 1 Failed. Engaging Tier 2 (Native PowerShell Command)..." -ForegroundColor Yellow
+                        try {
+                            Unregister-ScheduledTask -TaskName ($threat.Forensics.Name -replace "^\\", "") -Confirm:$false -ErrorAction Stop
+                            $success = $true
+                        } catch {}
+                    }
+                    
+                    # Attempt 3: Direct Core Surgical Purge (Bypasses "Access is Denied" on schtasks.exe)
+                    if (-not $success) {
+                        Write-Host "  [!] Tier 2 Failed (Access Denied). Engaging Tier 3 (Physical Disk & Registry Core Wipe)..." -ForegroundColor Red
+                        try {
+                            $cleanTaskName = $threat.Forensics.Name -replace "^\\", ""
+                            
+                            # Physical Task File Deletion
+                            $taskFilePath = Join-Path "C:\Windows\System32\Tasks" $cleanTaskName
+                            if (Test-Path $taskFilePath) {
+                                takeown.exe /F "`"$taskFilePath`"" /A 2>&1 | Out-Null
+                                icacls.exe "`"$taskFilePath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                                Remove-Item -Path $taskFilePath -Force -ErrorAction SilentlyContinue
+                            }
+                            
+                            # Registry entries sweep (Direct Hive deletion)
+                            $regPaths = @(
+                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName",
+                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks" # Associated GUID keys
+                            )
+                            foreach ($rp in $regPaths) {
+                                if (Test-Path $rp) {
+                                    # Override key lock permissions
+                                    takeown.exe /F "`"$rp`"" /A 2>&1 | Out-Null
+                                    Remove-Item -Path $rp -Recurse -Force -ErrorAction SilentlyContinue
+                                }
+                            }
+                            $success = $true
+                        } catch {
+                            Write-Host "  [-] Direct Surgical Wipe Failed: $($_.Exception.Message)" -ForegroundColor Red
                         }
-                    } catch {
-                        Write-Host "  [-] Failed to purge task: $($_.Exception.Message)" -ForegroundColor Red
-                        Write-GenLog "Task purge failed for $($threat.Forensics.Name) : $($_.Exception.Message)" "ERROR"
+                    }
+
+                    if ($success) {
+                        Write-Host "  [+] Scheduled Task Purged and Wiped Successfully." -ForegroundColor Green
+                        Write-GenLog "Successfully deleted scheduled task: $($threat.Forensics.Name)" "INFO"
+                        $cleanedCount++
+                    } else {
+                        Write-Host "  [-] Failed to purge task." -ForegroundColor Red
                     }
                     
                 } else {
@@ -891,22 +970,38 @@ function Invoke-CleanupEngine {
                     Write-Host "  [~] Trace: Terminating associated process [$procName]..." -ForegroundColor DarkGray
                     Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
                     
-                    try {
-                        Write-Host "  [~] Trace: Stripping file ownership and ACL protections..." -ForegroundColor DarkGray
-                        takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
-                        icacls.exe "`"$($threat.Forensics.Path)`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
-                        
-                        Write-Host "  [~] Trace: Normalizing file attributes..." -ForegroundColor DarkGray
-                        $f = Get-Item $threat.Forensics.Path -Force
-                        $f.Attributes = 'Normal'
-                        
-                        Remove-Item -Path $threat.Forensics.Path -Force -ErrorAction Stop
+                    # Retry Loop for Locked Files
+                    $success = $false
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        try {
+                            Write-Host "  [~] Deletion Attempt $attempt of 3..." -ForegroundColor DarkGray
+                            
+                            # Force unlock file locks (Strip ReadOnly / Hidden / System)
+                            takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
+                            icacls.exe "`"$($threat.Forensics.Path)`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                            
+                            $f = Get-Item $threat.Forensics.Path -Force
+                            $f.Attributes = 'Normal'
+                            
+                            # Try .NET Native Delete if standard fails
+                            [System.IO.File]::Delete($threat.Forensics.Path)
+                            $success = $true
+                            break
+                        } catch {
+                            Write-Host "  [!] Attempt $attempt Failed: Access is Denied. Retrying and forcing close..." -ForegroundColor Yellow
+                            # Force stop process by name using command line taskkill as backup
+                            taskkill.exe /F /IM "$procName.exe" 2>&1 | Out-Null
+                            Start-Sleep -Milliseconds 400
+                        }
+                    }
+                    
+                    if ($success) {
                         Write-Host "  [+] File Threat Deleted Successfully." -ForegroundColor Green
                         Write-GenLog "Successfully deleted file: $($threat.Forensics.Path)" "INFO"
                         $cleanedCount++
-                    } catch { 
-                        Write-Host "  [-] File Deletion Failed: $($_.Exception.Message)" -ForegroundColor Red 
-                        Write-GenLog "File deletion failed for $($threat.Forensics.Path) : $($_.Exception.Message)" "ERROR"
+                    } else { 
+                        Write-Host "  [-] File Deletion Failed after all force override attempts." -ForegroundColor Red 
+                        Write-GenLog "File deletion failed for $($threat.Forensics.Path)" "ERROR"
                     }
                 }
                 
