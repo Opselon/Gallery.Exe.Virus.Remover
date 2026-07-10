@@ -688,6 +688,7 @@ function Verify-TaskXMLIntegrity {
     }
     return $true
 }
+
 function Scan-ScheduledTasks {
     Write-Host "  [+] Initiating Advanced 10/10 Task Scheduler Forensic Audit..." -ForegroundColor Cyan
     Write-Host "  =====================================================================" -ForegroundColor DarkGray
@@ -866,7 +867,7 @@ function Scan-ScheduledTasks {
         }
 
         # لایه‌بندی هوشمند و پویا برای تسک‌های مایکروسافت (حل هوشمند طوفان False Positive)
-        if ($rt.Path -match "^\\Microsoft\\" -or $forensics.SignatureStatus -eq "Valid") {
+        if ($rt.Path -match "^\\Microsoft\\" -or (Get-AuthenticodeSignature -FilePath $actionExecutables[0]).Status -eq "Valid") {
             # اگر تسک متعلق به مایکروسافت باشد یا امضای فیزیکی فایل اجرایی/DLL آن معتبر باشد، کاملاً معاف است
             if (-not $hasInvalidSignaturesInActions -and -not $isHijackedCom) {
                 continue
@@ -877,8 +878,8 @@ function Scan-ScheduledTasks {
             }
         }
 
-        # فرمول ارتقای سخت‌گیرانه برای بدافزارهای مخفی (مانند Gallery.exe)
-  $isKnownUtility = $false
+        # تشخیص هوشمند ابزارهای اداری و منبع‌باز غیرمخرّب (مانند کلاینت‌های پروکسی v2rayN) جهت جلوگیری از دریافت امتیاز ۱۰۰
+        $isKnownUtility = $false
         if ($resolvedPath -and (Test-Path $resolvedPath)) {
             $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($resolvedPath)
             $utilityPattern = "v2rayN|Xray|Clash|Shadowsocks|AnyDesk|TeamViewer|PuTTY|WinSCP|FileZilla|v2ray"
@@ -923,19 +924,22 @@ function Scan-ScheduledTasks {
         
         # ذخیره تسک‌های مشکوک در بانک اطلاعاتی تهدیدات
         if ($status -ne "SAFE") {
+            # ایجاد شی فارنزیک به همراه ثبت امضا و هش جهت جلوگیری از خالی بودن فیلدهای ThreatCard
+            $forensicsObj = if ($forensics) { $forensics } else {
+                [PSCustomObject]@{
+                    Path = "Task: $($rt.Path)"
+                    Name = $rt.Path
+                    Size = 0
+                    IsCriticalPath = ($rt.Path -match "(?i)SoftwareProtectionPlatform|Windows Defender|UpdateOrchestrator")
+                    Signer = "Unknown"
+                    SignatureStatus = "N/A"
+                    SHA256 = if ($rt.GUID -ne "UNKNOWN") { $rt.GUID } else { "N/A" }
+                }
+            }
+
             $threatsFound++
             $Global:ThreatDatabase.Add([PSCustomObject]@{
-                Forensics = [PSCustomObject]@{ 
-                    Path = "Task: $($rt.Path)" 
-                    Name = $rt.Path 
-                    Size = 0 
-                    IsCriticalPath = ($rt.Path -match "(?i)SoftwareProtectionPlatform|Windows Defender|UpdateOrchestrator")
-                    Signer = if ($forensics) { $forensics.Signer } else { "N/A" }
-                    SHA256 = if ($forensics) { $forensics.SHA256 } else { "N/A" }
-                    GUID   = $rt.GUID
-                    XMLPath = $xmlPath
-                    CreatedDetails = $creationDetails
-                }
+                Forensics = $forensicsObj
                 Risk = [PSCustomObject]@{ 
                     Status = $status 
                     Score = $finalScore 
@@ -947,7 +951,7 @@ function Scan-ScheduledTasks {
         }
     }
 
-    # شناسایی و ردیابی فایل‌های فیزیکی رها شده روی هارد
+    # شناسایی و ردیابی فایل‌های فیزیکی رها شده روی هارد (فقط یک بار اجرا شود)
     foreach ($dt in $diskTasks) {
         if (-not $evaluatedDiskTasks.Contains($dt)) {
             $relativeDiskPath = $dt -replace "^.*System32\\Tasks", ""
@@ -961,6 +965,7 @@ function Scan-ScheduledTasks {
                     Size = (Get-Item $dt).Length 
                     IsCriticalPath = $false 
                     Signer = "N/A" 
+                    SignatureStatus = "N/A"
                     SHA256 = "N/A"
                     GUID   = "UNKNOWN"
                     XMLPath = $dt
@@ -1242,7 +1247,7 @@ function Show-ThreatCard {
         return $lines
     }
 
-    # چاپ ردیف تراز شده به عرض داخلی دقیقاً ۷۸ کاراکتر
+    # موتور پویا و ریاضی‌محور تراز کادرها (عرض کل بخش داخلی دقیقاً ۷۸ کاراکتر است)
     function Write-ThreatRow {
         param([string]$Label, [string]$Value, $RowColor, $LabelColor, $ValueColor)
         $labelWidth = 14
@@ -1284,6 +1289,7 @@ function Show-ThreatCard {
     # ۲. آماده‌سازی متون فیزیکی تسک
     $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task Cache)" }
     $signerText = "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]"
+    $riskText = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]  [$barPattern] $score%"
     $hashVal = if ($Threat.Forensics.SHA256) { $Threat.Forensics.SHA256 } else { "N/A" }
 
     # ==========================================================================
@@ -1293,7 +1299,7 @@ function Show-ThreatCard {
     Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ENTERPRISE THREAT INTELLIGENCE DETECTED                                      " -ForegroundColor White -NoNewline; Write-Host " ║" -ForegroundColor $color
     Write-Host "  ╠══════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor $color
     
-    # بخش اول: مشخصات فیزیکی فایل و مسیر رجیستری
+    # چاپ فیلدهای اطلاعاتی با استفاده از موتور تراز پویا
     Write-ThreatRow -Label "Full Path   : " -Value $Threat.Forensics.Path -RowColor $color -LabelColor "Cyan" -ValueColor "White"
     Write-ThreatRow -Label "File Size   : " -Value $sizeText -RowColor $color -LabelColor "Cyan" -ValueColor "Gray"
     Write-ThreatRow -Label "SHA256      : " -Value $hashVal -RowColor $color -LabelColor "Cyan" -ValueColor "Gray"
