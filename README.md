@@ -46,13 +46,29 @@ This is the **most secure method** and guarantees the script can apply its stron
 
 For ultimate convenience, you can run Gallery-Lock directly from the web. Open a **SYSTEM-level PowerShell** (using the PsExec method above) and use one of the following commands.
 
-> [!NOTE]
-> This downloads and executes a script from the internet. We recommend reviewing the code before running it.
 
-*   **To INSTALL or REPAIR the lock:**
-    ```powershell
-iex ((iwr "https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)" -UseBasicParsing).Content)
-    ```
+ولی برای یک ابزار امنیتی مثل **Gallery.Exe.Virus.Remover** نسخه حرفه‌ای‌تر پیشنهاد می‌کنم این باشد:
+
+```markdown
+> [!WARNING]
+> This command downloads and runs a PowerShell script from GitHub.
+>
+> Although the script is hosted in the official repository, always review the source code before execution.
+>
+> The command retrieves the latest version from the `main` branch and adds a cache-bypass parameter to prevent outdated CDN content.
+
+*   **INSTALL / REPAIR Gallery Lock Protection**
+
+```powershell
+$url="https://raw.githubusercontent.com/Opselon/Gallery.Exe.Virus.Remover/refs/heads/main/gallery_lock.ps1?cache=$(Get-Random)"
+
+$file="$env:TEMP\gallery_lock_latest.ps1"
+
+Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $file
+
+Get-FileHash $file -Algorithm SHA256
+
+powershell.exe -ExecutionPolicy Bypass -File $file
 
     
 ### 🚨 Troubleshooting: Common Errors
@@ -65,8 +81,7 @@ If your script output looks exactly like this, with repeated failures:
 [INFO] --- Processing Target: User Profile (AppData\Roaming) ---
 [ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
 
-[INFO] --- Processing Target: System Profile (32-bit) ---
-[ERROR] FAIL: Target path is not on an NTFS drive. ACLs cannot be applied.
+
 
 ... (and so on for all targets)
 ```
