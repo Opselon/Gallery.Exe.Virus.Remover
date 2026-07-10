@@ -688,7 +688,6 @@ function Verify-TaskXMLIntegrity {
     }
     return $true
 }
-
 function Scan-ScheduledTasks {
     Write-Host "  [+] Initiating Advanced 10/10 Task Scheduler Forensic Audit..." -ForegroundColor Cyan
     Write-Host "  =====================================================================" -ForegroundColor DarkGray
@@ -867,7 +866,7 @@ function Scan-ScheduledTasks {
         }
 
         # لایه‌بندی هوشمند و پویا برای تسک‌های مایکروسافت (حل هوشمند طوفان False Positive)
-          if ($rt.Path -match "^\\Microsoft\\" -or $forensics.SignatureStatus -eq "Valid") {
+        if ($rt.Path -match "^\\Microsoft\\" -or $forensics.SignatureStatus -eq "Valid") {
             # اگر تسک متعلق به مایکروسافت باشد یا امضای فیزیکی فایل اجرایی/DLL آن معتبر باشد، کاملاً معاف است
             if (-not $hasInvalidSignaturesInActions -and -not $isHijackedCom) {
                 continue
@@ -958,39 +957,6 @@ function Scan-ScheduledTasks {
     return $threatsFound
 }
 
-    # شناسایی و ردیابی فایل‌های فیزیکی رها شده روی هارد
-    foreach ($dt in $diskTasks) {
-        if (-not $evaluatedDiskTasks.Contains($dt)) {
-            $relativeDiskPath = $dt -replace "^.*System32\\Tasks", ""
-            if ($relativeDiskPath -match "^\\Microsoft\\") { continue } 
-
-            $threatsFound++
-            $Global:ThreatDatabase.Add([PSCustomObject]@{
-                Forensics = [PSCustomObject]@{ 
-                    Path = "Task: $relativeDiskPath" 
-                    Name = $relativeDiskPath 
-                    Size = (Get-Item $dt).Length 
-                    IsCriticalPath = $false 
-                    Signer = "N/A" 
-                    SHA256 = "N/A"
-                    GUID   = "UNKNOWN"
-                    XMLPath = $dt
-                    CreatedDetails = "Disk Stray XML Remnant"
-                }
-                Risk = [PSCustomObject]@{ 
-                    Status = "SUSPICIOUS" 
-                    Score = 65 
-                    Reasons = "Stray File remnant [XML exists in tasks directory with no registered Registry keys]" 
-                    IsGClone = $false
-                }
-            })
-            Write-GenLog "Stray task on disk mapped: $relativeDiskPath" "WARN"
-        }
-    }
-
-    Write-Host "  [✓] Complete Forensic Task Systems Audit Completed." -ForegroundColor Green
-    return $threatsFound
-}
 
 # ==============================================================================
 # [10] MASTER DEEP FILE SCANNER
