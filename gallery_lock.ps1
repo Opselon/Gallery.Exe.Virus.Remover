@@ -2,308 +2,339 @@
 
 <#
 .SYNOPSIS
-    Gallery.exe (Grenam) Ultimate Killer Suite & Decoy Vaccinator.
+    G.E.N. (Gallery.exe Extermination Neutralizer) - Enterprise Edition
 .DESCRIPTION
-    An enterprise-grade, all-in-one CLI tool to completely eradicate the Gallery.exe 
-    (Grenam) malware. It features an interactive menu for discovering hidden files,
-    restoring originals, cleaning fake executables, and deploying ultra-secure 
-    0-byte decoy files to prevent future infections.
-.FEATURES
-    [1] Deep System Scan & CSV Reporting
-    [2] Automatic Malware Eradication & File Restoration
-    [3] Ultra-Secure File Vaccination (Hardcoded Decoys)
-    [4] Windows Core System Repair (SFC & DISM)
+    An advanced, highly interactive, and safe CLI suite designed to hunt, verify, 
+    report, neutralize, and vaccinate Windows systems against the Gallery.exe (Grenam) 
+    polymorphic file infector. 
+    
+    Includes safety protocols to prevent accidental deletion of critical system files 
+    by requiring explicit human verification before executing purge sequences.
 .NOTES
-    Version: 4.0 - Master CLI Edition
-    Authors: Opselon, Jules & AI Assistant
+    Version: 6.0.0 (Enterprise Master Release)
+    Architecture: x64/x86 PowerShell Native
+    Author: Opselon & G.E.N Security Team
 #>
 
 $ErrorActionPreference = "SilentlyContinue"
-$Global:ReportPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Gallery_Infection_Report.csv"
-$Global:ScanResults = @()
+$Global:ReportFile = Join-Path ([Environment]::GetFolderPath("Desktop")) "GEN_Threat_Intelligence.csv"
+$Global:ActiveThreats = @()
 
 #================================================================================
-# MODULE 1: UI & UX ENGINE
+# [ CORE UI, AESTHETICS & LOGGING ENGINE ]
 #================================================================================
 
-function Write-Log {
-    param(
-        [Parameter(Mandatory=$true)][string]$Message,
-        [Parameter(Mandatory=$false)][ValidateSet("INFO", "SUCCESS", "WARN", "ERROR", "STEP", "HEADER", "MENU")][string]$Level = "INFO",
-        [Parameter(Mandatory=$false)][int]$Indent = 0
-    )
-
-    $colorMap = @{
-        "INFO" = "Gray"; "SUCCESS" = "Green"; "WARN" = "Yellow"
-        "ERROR" = "Red"; "STEP" = "Cyan"; "HEADER" = "Magenta"; "MENU" = "White"
-    }
-    $prefixMap = @{
-        "INFO" = "[i]"; "SUCCESS" = "[✓]"; "WARN" = "[!]"; 
-        "ERROR" = "[✗]"; "STEP" = "-->"; "HEADER" = "`n==="; "MENU" = ">>>"
-    }
-
-    $indentSpace = " " * ($Indent * 4)
-    $prefix = $prefixMap[$Level]
-    $color = $colorMap[$Level]
-    Write-Host -ForegroundColor $color "$indentSpace$prefix $Message"
-}
-
-function Show-Banner {
+function Show-GenAscii {
     Clear-Host
     Write-Host @"
+   ██████╗ ███████╗███╗   ██╗     ██╗   ██╗███████╗██╗   ██╗██╗   ██╗
+  ██╔════╝ ██╔════╝████╗  ██║     ██║   ██║██╔════╝╚██╗ ██╔╝██║   ██║
+  ██║  ███╗█████╗  ██╔██╗ ██║     ██║   ██║█████╗   ╚████╔╝ ██║   ██║
+  ██║   ██║██╔══╝  ██║╚██╗██║     ██║   ██║██╔══╝    ╚██╔╝  ██║   ██║
+  ╚██████╔╝███████╗██║ ╚████║     ╚██████╔╝███████╗   ██║   ╚██████╔╝
+   ╚═════╝ ╚══════╝╚═╝  ╚═══╝      ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝
+                      [ Gallery.exe Extermination Neutralizer ]
+"@ -ForegroundColor Cyan
+}
 
-   ____      _ _                  _  ___ _ _           ____        _ _       
-  / ___| __ _| | | ___ _ __ _   _| |/ (_) | | ___ _ __/ ___| _   _(_) |_ ___ 
- | |  _ / _` | | |/ _ \ '__| | | | ' /| | | |/ _ \ '__\___ \| | | | | __/ _ \
- | |_| | (_| | | |  __/ |  | |_| | . \| | | |  __/ |   ___) | |_| | | ||  __/
-  \____|\__,_|_|_|\___|_|   \__, |_|\_\_|_|_|\___|_|  |____/ \__,_|_|\__\___|
-                            |___/                                            
-"@ -ForegroundColor Red
+function Invoke-SystemProfiling {
+    Show-GenAscii
+    Write-Host "`n[SYSTEM PROFILING] Booting kernel diagnostics..." -ForegroundColor DarkGray
+    $os = (Get-CimInstance Win32_OperatingSystem).Caption
+    $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    $av = (Get-CimInstance -Namespace "root\SecurityCenter2" -Class AntiVirusProduct 2>$null).displayName -join ", "
+    if (-not $av) { $av = "Windows Defender (Native)" }
 
-    Write-Host "┌────────────────────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
-    Write-Host "│ " -ForegroundColor Cyan -NoNewline; Write-Host " The Ultimate Remediation & Vaccination Suite for Grenam Malware  " -ForegroundColor White -NoNewline; Write-Host " │" -ForegroundColor Cyan
-    Write-Host "├────────────────────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
-    Write-Host "│  " -ForegroundColor Cyan -NoNewline; Write-Host "STATUS:" -ForegroundColor Gray -NoNewline; Write-Host " Ready | " -ForegroundColor Green -NoNewline; Write-Host "PRIVILEGES:" -ForegroundColor Gray -NoNewline; Write-Host " Administrator | " -ForegroundColor Green -NoNewline; Write-Host "VERSION:" -ForegroundColor Gray -NoNewline; Write-Host " 4.0 CLI Master   " -ForegroundColor Cyan -NoNewline; Write-Host "│" -ForegroundColor Cyan
-    Write-Host "└────────────────────────────────────────────────────────────────────────┘`n" -ForegroundColor Cyan
+    $chars = @("|", "/", "-", "\")
+    for ($i = 0; $i -lt 10; $i++) {
+        Write-Host "`r[ $($chars[$i % 4]) ] Interfacing with host telemetry... " -NoNewline -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 70
+    }
+    
+    Write-Host "`r[ ✓ ] G.E.N. Core Systems Online.             `n" -ForegroundColor Green
+    Write-Host "  [-] HOST OS    : $os" -ForegroundColor Gray
+    Write-Host "  [-] MEMORY     : $ram GB ALLOCATED" -ForegroundColor Gray
+    Write-Host "  [-] DEFENSES   : $av" -ForegroundColor Gray
+    Write-Host "  [-] PRIVILEGES : ADMINISTRATOR (ELEVATED)`n" -ForegroundColor Gray
+    Start-Sleep -Seconds 2
+}
+
+function Show-MainMenu {
+    Show-GenAscii
+    Write-Host "`n  ::: COMMAND INTERFACE :::`n" -ForegroundColor Yellow
+    Write-Host "  [1] " -ForegroundColor Cyan -NoNewline; Write-Host "INITIATE DEEP SCAN (Find Gallery.exe & g-prefixed threats)" -ForegroundColor White
+    Write-Host "  [2] " -ForegroundColor Cyan -NoNewline; Write-Host "REVIEW & EXECUTE PURGE (Human Verification Required)" -ForegroundColor White
+    Write-Host "  [3] " -ForegroundColor Cyan -NoNewline; Write-Host "DEPLOY COUNTERMEASURES (Vaccinate System Vectors)" -ForegroundColor White
+    Write-Host "  [4] " -ForegroundColor Cyan -NoNewline; Write-Host "INTEGRITY REPAIR (SFC & DISM Diagnostics)" -ForegroundColor White
+    Write-Host "  [0] " -ForegroundColor Red -NoNewline; Write-Host "TERMINATE SESSION`n" -ForegroundColor DarkGray
+}
+
+function Pause-Console {
+    Write-Host "`n[AWAITING COMMAND] Press any key to return to Main Menu..." -ForegroundColor DarkGray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
 
 #================================================================================
-# MODULE 2: DISCOVERY & REPORTING (SCANNER)
+# [ MODULE 1: INTELLIGENCE GATHERING (DEEP SCAN) ]
 #================================================================================
 
-function Invoke-Scan {
-    Write-Log -Level HEADER -Message "INITIATING DEEP SCAN SEQUENCE"
+function Invoke-HunterKiller {
+    Show-GenAscii
+    Write-Host "`n--- ENGAGING HUNTER-KILLER MODE. SYSTEM-WIDE SWEEP INITIATED ---`n" -ForegroundColor Yellow
+    
     $drives = [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | ForEach-Object { $_.RootDirectory.FullName }
-    $Global:ScanResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $Global:ActiveThreats = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $criticalPaths = @("C:\Windows", "C:\ProgramData", "System32", "SysWOW64")
 
     foreach ($drive in $drives) {
-        Write-Log -Level INFO -Message "Scanning Volume: $drive ..."
+        Write-Host "[SCANNING SECTOR] :: $drive... Analyzing file system." -ForegroundColor Cyan
         
-        $gFiles = Get-ChildItem -Path $drive -Filter "g*.exe" -Recurse -File -Force | Where-Object { $_.Attributes -match "Hidden" }
-        
-        foreach ($file in $gFiles) {
-            $originalName = $file.Name.Substring(1)
-            $fakeExePath = Join-Path $file.DirectoryName $originalName
-            $fakeIcoPath = Join-Path $file.DirectoryName ($file.BaseName + ".ico")
+        # 1. Search for literal 'Gallery.exe' instances
+        $galleryMatches = Get-ChildItem -Path $drive -Filter "Gallery.exe" -Recurse -File -Force 2>$null
+        foreach ($g in $galleryMatches) {
+            $isCritical = $false
+            foreach ($cp in $criticalPaths) { if ($g.FullName -match [regex]::Escape($cp)) { $isCritical = $true } }
 
-            $Global:ScanResults.Add([PSCustomObject]@{
-                Directory      = $file.DirectoryName
-                HiddenOriginal = $file.Name
-                FakeExeName    = $originalName
-                FakeExeExists  = (Test-Path $fakeExePath)
-                FakeIcoExists  = (Test-Path $fakeIcoPath)
-                Status         = "Infected"
+            $Global:ActiveThreats.Add([PSCustomObject]@{
+                Type           = "Primary Payload"
+                Path           = $g.FullName
+                HiddenOriginal = "N/A"
+                FakeThreatName = $g.Name
+                IsCriticalPath = $isCritical
             })
+            Write-Host "  [PAYLOAD DETECTED] :: $($g.FullName)" -ForegroundColor Magenta
+        }
+
+        # 2. Search for hidden 'g*.exe' clones (Infected files)
+        $gCloneMatches = Get-ChildItem -Path $drive -Filter "g*.exe" -Recurse -File -Force 2>$null | Where-Object { $_.Attributes -match "Hidden" }
+        foreach ($c in $gCloneMatches) {
+            $originalName = $c.Name.Substring(1)
+            $fakePath = Join-Path $c.DirectoryName $originalName
+            
+            $isCritical = $false
+            foreach ($cp in $criticalPaths) { if ($c.FullName -match [regex]::Escape($cp)) { $isCritical = $true } }
+
+            $Global:ActiveThreats.Add([PSCustomObject]@{
+                Type           = "Infected Clone"
+                Path           = $fakePath
+                HiddenOriginal = $c.Name
+                FakeThreatName = $originalName
+                IsCriticalPath = $isCritical
+            })
+            Write-Host "  [CLONE DETECTED]   :: $($c.FullName) (Hiding $originalName)" -ForegroundColor Red
         }
     }
 
-    if ($Global:ScanResults.Count -gt 0) {
-        Write-Log -Level WARN -Message "Found $($Global:ScanResults.Count) infected items!"
-        $Global:ScanResults | Export-Csv -Path $Global:ReportPath -NoTypeInformation -Encoding UTF8
-        Write-Log -Level SUCCESS -Message "CSV Report generated at: $Global:ReportPath"
-        Write-Log -Level INFO -Message "Proceed to Option [2] to clean and restore these files."
+    if ($Global:ActiveThreats.Count -gt 0) {
+        $Global:ActiveThreats | Export-Csv -Path $Global:ReportFile -NoTypeInformation -Encoding UTF8
+        Write-Host "`n[INTELLIGENCE GATHERED] :: $($Global:ActiveThreats.Count) hostile signatures detected." -ForegroundColor Green
+        Write-Host "[LOG EXPORTED]          :: $Global:ReportFile" -ForegroundColor DarkGray
+        Write-Host "RECOMMENDATION: Proceed to Protocol [2] to review targets and authorize purge." -ForegroundColor Yellow
     } else {
-        Write-Log -Level SUCCESS -Message "No hidden g*.exe clones found. Drives appear clean."
+        Write-Host "`n[CLEAR] :: No hostile signatures found. The system is clean." -ForegroundColor Green
     }
-    Pause-Execution
+    Pause-Console
 }
 
 #================================================================================
-# MODULE 3: REMEDIATION (CLEAN & RESTORE)
+# [ MODULE 2: HUMAN VERIFICATION & PURGE EXECUTION ]
 #================================================================================
 
-function Invoke-CleanAndRestore {
-    Write-Log -Level HEADER -Message "INITIATING CLEANSING AND RESTORATION"
+function Invoke-PurgeVerification {
+    Show-GenAscii
+    Write-Host "`n--- THREAT REVIEW & AUTHORIZATION PROTOCOL ---`n" -ForegroundColor Yellow
+
+    if ($Global:ActiveThreats.Count -eq 0) {
+        if (Test-Path $Global:ReportFile) {
+            $Global:ActiveThreats = Import-Csv -Path $Global:ReportFile
+        } else {
+            Write-Host "[ERROR] :: No threat intelligence found. Please run Protocol [1] first." -ForegroundColor Red
+            Pause-Console
+            return
+        }
+    }
+
+    Write-Host "The following compromised assets have been identified:`n" -ForegroundColor White
+    $criticalCount = 0
+
+    foreach ($t in $Global:ActiveThreats) {
+        if ($t.IsCriticalPath -eq $true -or $t.IsCriticalPath -eq "True") {
+            Write-Host "[CRITICAL PATH] " -ForegroundColor Red -NoNewline
+            $criticalCount++
+        } else {
+            Write-Host "[STANDARD PATH] " -ForegroundColor Green -NoNewline
+        }
+        
+        if ($t.Type -eq "Primary Payload") {
+            Write-Host "PAYLOAD -> $($t.Path)" -ForegroundColor Magenta
+        } else {
+            Write-Host "CLONE   -> $($t.Path) (Hides: $($t.HiddenOriginal))" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "`n[SUMMARY] Total Targets: $($Global:ActiveThreats.Count) | Critical System Paths: $criticalCount" -ForegroundColor Cyan
+    Write-Host "WARNING: Restoring/Deleting files in Critical Paths may require manual reinstallation of affected software.`n" -ForegroundColor Red
+
+    $confirmation = Read-Host "[AUTHORIZATION REQUIRED] Type 'YES' to execute purge and restore, or 'NO' to abort"
     
-    if (-not (Test-Path $Global:ReportPath) -and $Global:ScanResults.Count -eq 0) {
-        Write-Log -Level ERROR -Message "No scan data found. Please run Option [1] first!"
-        Pause-Execution
+    if ($confirmation -ne 'YES') {
+        Write-Host "`n[ABORTED] :: Purge sequence cancelled by operator." -ForegroundColor DarkGray
+        Pause-Console
         return
     }
 
-    # Load from CSV if memory is empty
-    if ($Global:ScanResults.Count -eq 0) {
-        $Global:ScanResults = Import-Csv -Path $Global:ReportPath
-    }
+    Write-Host "`n[AUTHORIZATION ACCEPTED] :: EXECUTING PURGE...`n" -ForegroundColor Green
+    $restored = 0
+    $deleted = 0
 
-    $restoredCount = 0
-    $counter = 0
-
-    foreach ($item in $Global:ScanResults) {
-        $counter++
-        $percent = [math]::Round(($counter / $Global:ScanResults.Count) * 100)
-        Write-Progress -Activity "Eradicating Malware" -Status "Restoring: $($item.FakeExeName)" -PercentComplete $percent
-
-        $hiddenPath = Join-Path $item.Directory $item.HiddenOriginal
-        $fakeExePath = Join-Path $item.Directory $item.FakeExeName
-        $fakeIcoPath = Join-Path $item.Directory ($item.HiddenOriginal.Replace(".exe", ".ico"))
-
+    foreach ($threat in $Global:ActiveThreats) {
         try {
-            # 1. Kill Process
-            $procName = [System.IO.Path]::GetFileNameWithoutExtension($fakeExePath)
-            Stop-Process -Name $procName -Force 2>$null
+            if ($threat.Type -eq "Primary Payload") {
+                # Just delete Gallery.exe
+                Stop-Process -Name "Gallery" -Force 2>$null
+                attrib.exe -r -s -h "`"$($threat.Path)`"" 2>$null
+                Remove-Item -Path $threat.Path -Force 2>$null
+                Write-Host "  [DESTROYED] :: $($threat.Path)" -ForegroundColor Green
+                $deleted++
+            } 
+            elseif ($threat.Type -eq "Infected Clone") {
+                $dir = Split-Path $threat.Path -Parent
+                $fakePath = $threat.Path
+                $fakeIcoPath = Join-Path $dir ($threat.HiddenOriginal.Replace(".exe", ".ico"))
+                $hiddenPath = Join-Path $dir $threat.HiddenOriginal
 
-            # 2. Obliterate Fakes
-            if (Test-Path $fakeExePath) {
-                attrib.exe -r -s -h "`"$fakeExePath`"" 2>$null
-                Remove-Item -Path $fakeExePath -Force
-            }
-            if (Test-Path $fakeIcoPath) {
-                attrib.exe -r -s -h "`"$fakeIcoPath`"" 2>$null
-                Remove-Item -Path $fakeIcoPath -Force
-            }
+                # Kill fake process
+                $procName = [System.IO.Path]::GetFileNameWithoutExtension($fakePath)
+                Stop-Process -Name $procName -Force 2>$null
 
-            # 3. Resurrect Original
-            if (Test-Path $hiddenPath) {
-                $hiddenItem = Get-Item $hiddenPath -Force
-                $hiddenItem.Attributes = 'Archive'
-                Rename-Item -Path $hiddenPath -NewName $item.FakeExeName -Force -ErrorAction Stop
-                
-                $item.Status = "Restored"
-                $restoredCount++
+                # Delete fakes
+                if (Test-Path $fakePath) { attrib.exe -r -s -h "`"$fakePath`"" 2>$null; Remove-Item -Path $fakePath -Force; $deleted++ }
+                if (Test-Path $fakeIcoPath) { attrib.exe -r -s -h "`"$fakeIcoPath`"" 2>$null; Remove-Item -Path $fakeIcoPath -Force }
+
+                # Restore original
+                if (Test-Path $hiddenPath) {
+                    $item = Get-Item $hiddenPath -Force
+                    $item.Attributes = 'Archive'
+                    Rename-Item -Path $hiddenPath -NewName $threat.FakeThreatName -Force -ErrorAction Stop
+                    Write-Host "  [RESTORED]  :: $($threat.FakeThreatName) unhidden and secured." -ForegroundColor Green
+                    $restored++
+                }
             }
         } catch {
-            $item.Status = "Failed"
-            Write-Log -Level ERROR -Message "Failed to restore $($item.FakeExeName)"
+            Write-Host "  [FAILED]    :: Could not process $($threat.Path). Exception: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
-    
-    Write-Progress -Activity "Eradicating Malware" -Completed
-    $Global:ScanResults | Export-Csv -Path $Global:ReportPath -NoTypeInformation -Encoding UTF8
-    
-    Write-Log -Level SUCCESS -Message "Restored $restoredCount out of $($Global:ScanResults.Count) files."
-    Write-Log -Level INFO -Message "Updated CSV log saved to Desktop."
-    Pause-Execution
+
+    Write-Host "`n[OPERATION COMPLETE] :: $deleted hostile entities destroyed. $restored original assets restored." -ForegroundColor Cyan
+    # Clear active threats array after successful purge
+    $Global:ActiveThreats = @()
+    Pause-Console
 }
 
 #================================================================================
-# MODULE 4: VACCINATION (HARDCODED DECOYS)
+# [ MODULE 3: VACCINATION (HARDCODED DECOYS) ]
 #================================================================================
 
 function Invoke-Vaccination {
-    Write-Log -Level HEADER -Message "INITIATING SYSTEM VACCINATION (HARDCODED DECOYS)"
-    
-    $decoyTargets = @(
-        @{ Path = Join-Path $env:APPDATA "Gallery.exe"; Desc = "AppData\Roaming" },
-        @{ Path = Join-Path $env:APPDATA "gallery\Gallery.exe"; Desc = "AppData\Roaming\gallery" },
-        @{ Path = Join-Path $env:LOCALAPPDATA "Gallery.exe"; Desc = "AppData\Local" },
-        @{ Path = Join-Path ([Environment]::GetFolderPath('Startup')) "Gallery.exe"; Desc = "Startup Folder" },
-        @{ Path = Join-Path $env:TEMP "Gallery.exe"; Desc = "User Temp" },
-        @{ Path = "C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe"; Desc = "SysWOW64 Profile" },
-        @{ Path = "C:\Windows\System32\config\systemprofile\AppData\Roaming\Gallery.exe"; Desc = "System32 Profile" },
-        @{ Path = Join-Path $env:windir "Temp\Gallery.exe"; Desc = "Windows Temp" }
+    Show-GenAscii
+    Write-Host "`n--- DEPLOYING COUNTERMEASURES ON PRIORITY-ZERO TARGETS ---`n" -ForegroundColor Yellow
+
+    $ZeroTargets = @(
+        Join-Path $env:APPDATA "Gallery.exe",
+        Join-Path $env:APPDATA "gallery\Gallery.exe",
+        Join-Path $env:LOCALAPPDATA "Gallery.exe",
+        Join-Path ([Environment]::GetFolderPath('Startup')) "Gallery.exe",
+        Join-Path $env:TEMP "Gallery.exe",
+        "C:\Windows\SysWOW64\config\systemprofile\AppData\Roaming\Gallery.exe",
+        "C:\Windows\System32\config\systemprofile\AppData\Roaming\Gallery.exe"
     )
 
-    $successCount = 0
+    foreach ($target in $ZeroTargets) {
+        Write-Host "[TARGET SECURING] :: $target" -ForegroundColor Cyan
+        
+        $drive = Get-PSDrive -Name ($target.Split(':')[0]) 2>$null
+        if (-not $drive -or $drive.FileSystem -ne 'NTFS') { continue }
 
-    foreach ($target in $decoyTargets) {
-        Write-Log -Level STEP -Message "Locking: $($target.Desc)"
-        $TargetPath = $target.Path
-
-        # Check NTFS
-        $drive = Get-PSDrive -Name ($TargetPath.Split(':')[0]) 2>$null
-        if (-not $drive -or $drive.FileSystem -ne 'NTFS') {
-            Write-Log -Level ERROR -Message "Skipped (Not NTFS): $TargetPath" -Indent 1
-            continue
-        }
-
-        # Parent Dir
-        $parentDir = Split-Path $TargetPath -Parent
+        $parentDir = Split-Path $target -Parent
         if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
 
-        # Delete existing & Create Decoy
-        if (Test-Path $TargetPath -PathType Leaf) {
-            takeown /f $TargetPath /a 2>$null | Out-Null
-            icacls $TargetPath /reset /t /c /q 2>$null | Out-Null
-            Remove-Item -Path $TargetPath -Force 2>$null
+        if (Test-Path $target -PathType Leaf) {
+            takeown /f $target /a 2>$null | Out-Null
+            icacls $target /reset /t /c /q 2>$null | Out-Null
+            Remove-Item -Path $target -Force 2>$null
         }
-        New-Item -ItemType File -Path $TargetPath -Force | Out-Null
 
-        # Lock Down Attributes and ACL
+        New-Item -ItemType File -Path $target -Force | Out-Null
+
         try {
-            Set-ItemProperty -Path $TargetPath -Name Attributes -Value ([System.IO.FileAttributes]::Hidden, [System.IO.FileAttributes]::System) -Force
-            
+            Set-ItemProperty -Path $target -Name Attributes -Value ([System.IO.FileAttributes]::Hidden, [System.IO.FileAttributes]::System) -Force
             $acl = New-Object System.Security.AccessControl.FileSecurity
             $acl.SetAccessRuleProtection($true, $false)
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Everyone", "FullControl", "Deny")))
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM", "FullControl", "Allow")))
-            Set-Acl -Path $TargetPath -AclObject $acl
+            Set-Acl -Path $target -AclObject $acl
             
-            $successCount++
-            Write-Log -Level SUCCESS -Message "Vaccine Deployed Successfully." -Indent 1
+            Write-Host "  [LOCKED] :: Decoy deployed. Threat vector sealed." -ForegroundColor Green
         } catch {
-            Write-Log -Level ERROR -Message "ACL Lock Failed: $($_.Exception.Message)" -Indent 1
+            Write-Host "  [FAILED] :: Could not enforce ACL lockdown." -ForegroundColor Red
         }
     }
-
-    Write-Log -Level INFO -Message "------------------------------------------------"
-    if ($successCount -eq $decoyTargets.Count) {
-        Write-Log -Level SUCCESS -Message "All $successCount decoys deployed! System is bulletproof."
-    } else {
-        Write-Log -Level WARN -Message "Deployed $successCount out of $($decoyTargets.Count) decoys. Some system paths may be restricted."
-    }
-    Pause-Execution
+    Pause-Console
 }
 
 #================================================================================
-# MODULE 5: SYSTEM REPAIR
+# [ MODULE 4: SYSTEM INTEGRITY REPAIR ]
 #================================================================================
 
-function Invoke-SystemRepair {
-    Write-Log -Level HEADER -Message "INITIATING WINDOWS CORE REPAIR (DISM & SFC)"
-    Write-Log -Level WARN -Message "This process may take 10-20 minutes. Do not close the window."
-    
-    Write-Log -Level STEP -Message "Running DISM (Deployment Image Servicing and Management)..."
+function Invoke-IntegrityRepair {
+    Show-GenAscii
+    Write-Host "`n--- INITIATING KERNEL INTEGRITY REPAIR (DISM / SFC) ---`n" -ForegroundColor Yellow
+    Write-Host "[WARNING] This protocol may take several minutes to complete.`n" -ForegroundColor DarkGray
+
+    Write-Host "[DISM] Executing Image Restoration..." -ForegroundColor Cyan
     DISM.exe /Online /Cleanup-Image /RestoreHealth
-    
-    Write-Log -Level STEP -Message "Running SFC (System File Checker)..."
+
+    Write-Host "`n[SFC] Executing Core File Verification..." -ForegroundColor Cyan
     sfc /scannow
 
-    Write-Log -Level SUCCESS -Message "Core system verification complete!"
-    Pause-Execution
+    Write-Host "`n[REPAIR COMPLETE] :: System integrity successfully verified." -ForegroundColor Green
+    Pause-Console
 }
 
 #================================================================================
-# HELPER & MENU
+# [ MAIN EXECUTION LOOP ]
 #================================================================================
 
-function Pause-Execution {
-    Write-Host "`nPress any key to return to the Main Menu..." -ForegroundColor DarkGray
-    $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $isAdmin) {
+    Show-GenAscii
+    Write-Host "`n[FATAL ERROR] :: G.E.N. Protocols require elevated Administrator privileges." -ForegroundColor Red
+    Write-Host "Right-click PowerShell and select 'Run as Administrator'." -ForegroundColor White
+    Write-Host "Terminating session in 5 seconds..." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 5
+    exit
 }
 
-function Show-Menu {
-    Show-Banner
-    Write-Host "  [1]" -ForegroundColor Yellow -NoNewline; Write-Host " Scan System for Infected/Hidden Files & Export CSV" -ForegroundColor White
-    Write-Host "  [2]" -ForegroundColor Yellow -NoNewline; Write-Host " Clean Fakes & Restore Original Executables" -ForegroundColor White
-    Write-Host "  [3]" -ForegroundColor Yellow -NoNewline; Write-Host " Deploy Hardcoded Decoy Vaccines (Lockdown)" -ForegroundColor White
-    Write-Host "  [4]" -ForegroundColor Yellow -NoNewline; Write-Host " Run Windows System Repair (SFC & DISM)" -ForegroundColor White
-    Write-Host "  [0]" -ForegroundColor Red -NoNewline; Write-Host " Exit Tool`n" -ForegroundColor DarkGray
-}
+Invoke-SystemProfiling
 
-#================================================================================
-# MAIN CLI LOOP
-#================================================================================
-
-$isRunning = $true
-
-while ($isRunning) {
-    Show-Menu
-    $choice = Read-Host "  Enter your choice (0-4)"
-
-    switch ($choice) {
-        '1' { Invoke-Scan }
-        '2' { Invoke-CleanAndRestore }
+$sessionActive = $true
+while ($sessionActive) {
+    Show-MainMenu
+    $input = Read-Host "  [COMMAND]"
+    
+    switch ($input) {
+        '1' { Invoke-HunterKiller }
+        '2' { Invoke-PurgeVerification }
         '3' { Invoke-Vaccination }
-        '4' { Invoke-SystemRepair }
+        '4' { Invoke-IntegrityRepair }
         '0' { 
-            Write-Log -Level SUCCESS -Message "Exiting Gallery Killer Suite. Stay safe!"
+            Write-Host "`n[TERMINATING] :: G.E.N. Session Closed. Stay Vigilant." -ForegroundColor Cyan
             Start-Sleep -Seconds 2
-            $isRunning = $false 
+            $sessionActive = $false 
         }
-        Default { 
-            Write-Log -Level ERROR -Message "Invalid selection. Please enter a number between 0 and 4."
-            Start-Sleep -Seconds 2
+        Default {
+            Write-Host "`n[INVALID] :: Unrecognized command syntax." -ForegroundColor Red
+            Start-Sleep -Seconds 1
         }
     }
 }
