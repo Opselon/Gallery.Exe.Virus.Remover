@@ -878,9 +878,24 @@ function Scan-ScheduledTasks {
         }
 
         # فرمول ارتقای سخت‌گیرانه برای بدافزارهای مخفی (مانند Gallery.exe)
+  $isKnownUtility = $false
+        if ($resolvedPath -and (Test-Path $resolvedPath)) {
+            $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($resolvedPath)
+            $utilityPattern = "v2rayN|Xray|Clash|Shadowsocks|AnyDesk|TeamViewer|PuTTY|WinSCP|FileZilla|v2ray"
+            if ($versionInfo.ProductName -match $utilityPattern -or $versionInfo.FileDescription -match $utilityPattern -or $exeName -match "v2ray") {
+                $isKnownUtility = $true
+            }
+        }
+
+        # فرمول ارتقای سخت‌گیرانه برای بدافزارهای فاقد امضا (مانند Gallery.exe)
         if ($isWritablePath -and $score -ge 60) {
-            $score = 100
-            $reasons.Add("Gallery Polymorphic Execution Lock: Confirmed hostile custom payload.")
+            if ($isKnownUtility) {
+                $score = 50 # قفل کردن امتیاز روی حالت مشکوک برای ابزارهای سیستمی کاربردی
+                $reasons.Add("Unsigned Utility Exception: Verified known open-source administrative tool ($exeName)")
+            } else {
+                $score = 100
+                $reasons.Add("Gallery Polymorphic Execution Lock: Confirmed hostile custom payload.")
+            }
         }
 
         $finalScore = [math]::Max(0, [math]::Min($score, 100))
@@ -890,13 +905,22 @@ function Scan-ScheduledTasks {
 
         # بررسی و اعتبارسنجی یکپارچگی هش فیزیکی XML تسک‌ها
         if ($status -ne "SAFE" -or $finalScore -ge 30) {
+            # تفکیک پویای رکوردهای خراب رجیستری کمپانی‌های معتبر از بدافزارهای فعال
+            if ($isOrphanedRegistry -or $isBrokenGuidMapping) {
+                if ($rt.Path -match "(?i)Google|Intel|Adobe|Microsoft|System|Driver|Update|AMD|NVIDIA|Dell|HP") {
+                    $finalScore = 35 # تبدیل وضعیت از بدافزار (۷۰) به زباله ریجستری مشکوک غیرفعال (۳۵)
+                    $status = "SUSPICIOUS"
+                    $reasons.Add("Benign Registry Orphan [Residual registry key left by uninstalled software]")
+                }
+            }
+
             $integrityCheck = Verify-TaskXMLIntegrity -TaskPath $rt.Path -XmlPath $xmlPath -CurrentRiskScore $finalScore
-            if (-not $integrityCheck) {
+            if (-not $integrityCheck -and $finalScore -ge 50) {
                 $finalScore = 100
                 $status = "MALWARE"
             }
         }
-
+        
         # ذخیره تسک‌های مشکوک در بانک اطلاعاتی تهدیدات
         if ($status -ne "SAFE") {
             $threatsFound++
