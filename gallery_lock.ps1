@@ -1227,11 +1227,12 @@ function Remove-IcoClone {
 function Show-ThreatCard {
     param($Threat)
     
+    # تعیین رنگ سازمانی کارت بر اساس سطح بحرانی بودن تهدید
     $color = if ($Threat.Risk.Score -gt 80) { "Red" } elseif ($Threat.Risk.Score -gt 50) { "Magenta" } else { "Yellow" }
     
-    # تابع کمکی امن برای تراز کردن متون بدون تداخل با قوانین StrictMode
+    # تابع کمکی امن و سازگار با StrictMode برای شکستن منظم خطوط بلند
     function Get-WrappedLines {
-        param([string]$text, [int]$width = 66)
+        param([string]$text, [int]$width = 64)
         if ([string]::IsNullOrEmpty($text)) { return @("") }
         $lines = @()
         for ($i = 0; $i -lt $text.Length; $i += $width) {
@@ -1241,49 +1242,82 @@ function Show-ThreatCard {
         return $lines
     }
 
-    # موتور پویا و ریاضی‌محور تراز کادرها (عرض کل بخش داخلی دقیقاً ۷۸ کاراکتر است)
+    # چاپ ردیف تراز شده به عرض داخلی دقیقاً ۷۸ کاراکتر
     function Write-ThreatRow {
-        param([string]$Label, [string]$Value, $RowColor, $ValueColor)
-        $labelWidth = 12
+        param([string]$Label, [string]$Value, $RowColor, $LabelColor, $ValueColor)
+        $labelWidth = 14
         $valWidth = 78 - $labelWidth
         
         $wrapped = Get-WrappedLines -text $Value -width $valWidth
         $firstLine = if ($wrapped.Count -gt 0) { $wrapped[0] } else { "" }
         
         Write-Host "  ║ " -ForegroundColor $RowColor -NoNewline
-        Write-Host ($Label.PadRight($labelWidth)) -ForegroundColor Cyan -NoNewline
+        Write-Host ($Label.PadRight($labelWidth)) -ForegroundColor $LabelColor -NoNewline
         Write-Host ($firstLine.PadRight($valWidth)) -ForegroundColor $ValueColor -NoNewline
-        Write-Host "║" -ForegroundColor $RowColor
+        Write-Host " ║" -ForegroundColor $RowColor
         
         for ($i = 1; $i -lt $wrapped.Count; $i++) {
             Write-Host "  ║ " -ForegroundColor $RowColor -NoNewline
             Write-Host (" " * $labelWidth) -NoNewline
             Write-Host ($wrapped[$i].PadRight($valWidth)) -ForegroundColor $ValueColor -NoNewline
-            Write-Host "║" -ForegroundColor $RowColor
+            Write-Host " ║" -ForegroundColor $RowColor
         }
     }
 
-    # آماده‌سازی و فرمت فیلدها
-    $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task)" }
+    # ترسیم جداکننده افقی ظریف در داخل باکس اصلی
+    function Write-ThreatDivider {
+        param($RowColor)
+        # 78 dashes + borders
+        Write-Host "  ╟" -ForegroundColor $RowColor -NoNewline
+        Write-Host ("─" * 78) -ForegroundColor "DarkGray" -NoNewline
+        Write-Host "╢" -ForegroundColor $RowColor
+    }
+
+    # ۱. محاسبه و رسم نمودار پیشرفت نمره ریسک (ASCII Telemetry Bar)
+    $score = $Threat.Risk.Score
+    $barLength = 10
+    $filledLength = [math]::Round(($score / 100) * $barLength)
+    $unfilledLength = $barLength - $filledLength
+    $barPattern = ("█" * $filledLength) + ("░" * $unfilledLength)
+    $riskText = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]  [$barPattern] $score%"
+
+    # ۲. آماده‌سازی متون فیزیکی تسک
+    $sizeText = if ($Threat.Forensics.Size -gt 0) { "{0:N2} KB" -f ($Threat.Forensics.Size / 1KB) } else { "0.00 KB (Registry/Task Cache)" }
     $signerText = "$($Threat.Forensics.Signer) [$($Threat.Forensics.SignatureStatus)]"
-    $riskText = "$($Threat.Risk.Score)/100 [ $($Threat.Risk.Status) ]"
     $hashVal = if ($Threat.Forensics.SHA256) { $Threat.Forensics.SHA256 } else { "N/A" }
 
-    # چاپ کادر اصلی تراز شده به عرض دقیق ۸۴ کاراکتر
+    # ==========================================================================
+    # شروع چاپ کارت فارنزیک تهدید
+    # ==========================================================================
     Write-Host "  ╔══════════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $color
-    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ACTIVE THREAT IDENTIFIED                                                     " -ForegroundColor White -NoNewline; Write-Host "║" -ForegroundColor $color
+    Write-Host "  ║ " -ForegroundColor $color -NoNewline; Write-Host "🚨 ENTERPRISE THREAT INTELLIGENCE DETECTED                                      " -ForegroundColor White -NoNewline; Write-Host " ║" -ForegroundColor $color
     Write-Host "  ╠══════════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor $color
     
-    # چاپ فیلدهای اطلاعاتی با استفاده از موتور تراز پویا
-    Write-ThreatRow -Label "Full Path : " -Value $Threat.Forensics.Path -RowColor $color -ValueColor White
-    Write-ThreatRow -Label "File Size : " -Value $sizeText -RowColor $color -ValueColor Gray
-    Write-ThreatRow -Label "SHA256    : " -Value $hashVal -RowColor $color -ValueColor Gray
-    Write-ThreatRow -Label "Signature : " -Value $signerText -RowColor $color -ValueColor Gray
-    Write-ThreatRow -Label "Risk Lvl  : " -Value $riskText -RowColor $color -ValueColor Red
-    Write-ThreatRow -Label "Reasons   : " -Value $Threat.Risk.Reasons -RowColor $color -ValueColor Yellow
+    # بخش اول: مشخصات فیزیکی فایل و مسیر رجیستری
+    Write-ThreatRow -Label "Full Path   : " -Value $Threat.Forensics.Path -RowColor $color -LabelColor "Cyan" -ValueColor "White"
+    Write-ThreatRow -Label "File Size   : " -Value $sizeText -RowColor $color -LabelColor "Cyan" -ValueColor "Gray"
+    Write-ThreatRow -Label "SHA256      : " -Value $hashVal -RowColor $color -LabelColor "Cyan" -ValueColor "Gray"
+    Write-ThreatRow -Label "Signature   : " -Value $signerText -RowColor $color -LabelColor "Cyan" -ValueColor "Gray"
+    
+    # چاپ جداکننده بخش هویتی از بخش تحلیل فارنزیک
+    Write-ThreatDivider -RowColor $color
+
+    # بخش دوم: وضعیت ریسک و آنالیز Heuristics
+    Write-ThreatRow -Label "Risk Metric : " -Value $riskText -RowColor $color -LabelColor "Cyan" -ValueColor "Red"
+    
+    # تفکیک بالت‌وار و هوشمند دلایل شناسایی
+    $reasonsList = $Threat.Risk.Reasons -split "\s*\|\s*"
+    $firstReason = if ($reasonsList.Count -gt 0) { "• " + $reasonsList[0] } else { "• No explicit reasons recorded" }
+    
+    Write-ThreatRow -Label "Scan Flags  : " -Value $firstReason -RowColor $color -LabelColor "Cyan" -ValueColor "Yellow"
+    for ($i = 1; $i -lt $reasonsList.Count; $i++) {
+        Write-ThreatRow -Label "" -Value ("• " + $reasonsList[$i]) -RowColor $color -LabelColor "Cyan" -ValueColor "Yellow"
+    }
 
     Write-Host "  ╚══════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
+
+
 function Invoke-CleanupEngine {
     Show-GenHeader
     Write-Host "  [🧹] INITIATING THREAT NEUTRALIZATION & RECOVERY PROTOCOL" -ForegroundColor Red
