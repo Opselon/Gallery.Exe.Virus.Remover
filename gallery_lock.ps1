@@ -736,8 +736,12 @@ function Scan-ScheduledTasks {
         $hasInvalidSignaturesInActions = $false
 
         # بررسی همبستگی GUID
-        $guidKey = Join-Path $tasksKeyPath $rt.GUID
-        if (-not (Test-Path $guidKey)) {
+        $tasksRegKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks")
+        $registeredGUIDs = if ($tasksRegKey) { $tasksRegKey.GetSubKeyNames() } else { @() }
+        if ($tasksRegKey) { $tasksRegKey.Close() }
+
+        # بررسی همبستگی GUID بدون ایجاد خطای عدم دسترسی رجیستری
+        if ($registeredGUIDs -notcontains $rt.GUID) {
             $score += 50
             $isBrokenGuidMapping = $true
             $reasons.Add("Broken GUID Mapping [Orphaned task registered in cache]")
@@ -866,15 +870,18 @@ function Scan-ScheduledTasks {
             }
         }
 
-        # لایه‌بندی هوشمند و پویا برای تسک‌های مایکروسافت (حل هوشمند طوفان False Positive)
-        if ($rt.Path -match "^\\Microsoft\\" -or (Get-AuthenticodeSignature -FilePath $actionExecutables[0]).Status -eq "Valid") {
-            # اگر تسک متعلق به مایکروسافت باشد یا امضای فیزیکی فایل اجرایی/DLL آن معتبر باشد، کاملاً معاف است
+     # لایه‌بندی هوشمند و پویا برای کمپانی‌های معتبر رسمی (حفاظت در برابر فلگ شدن فله‌ای تسک‌های ایمن سیستم)
+       $trustedPattern = "(?i)^\\(Microsoft|Google|Intel|NVIDIA|AMD|ATI|Realtek|Adobe|ESET|Kaspersky|Bitdefender|Malwarebytes|Steam|EpicGames|Discord|Spotify|Dropbox|OneDrive|Apple|Dell|HP|Lenovo|ASUS|Razer|PowerToys|Mozilla|v2ray|v2rayN|Clash|Shadowsocks|AnyDesk|TeamViewer|WinRAR|7-Zip|Git|GitHub|VSCode|JetBrains|Java|Oracle|CCleaner|Docker|Python|Node|Firefox|Chrome|Edge|Brave)"
+        
+        $isTrustedVendorFolder = $rt.Path -match $trustedPattern
+
+        if ($isTrustedVendorFolder -or $forensics.SignatureStatus -eq "Valid") {
+            # تسک‌های زیرمجموعه دیتابیس در صورتی که امضای مخرّب، دستکاری یا ابزار هک نباشند کاملاً معاف هستند
             if (-not $hasInvalidSignaturesInActions -and -not $isHijackedCom) {
                 continue
             } else {
-                # بدافزار به فایل سیستمی مایکروسافت نفوذ کرده یا امضایی معتبر ندارد
                 $score += 45
-                $reasons.Add("System Folder Masquerade: Suspicious/Unsigned execution inside HKLM Microsoft path")
+                $reasons.Add("System Folder Masquerade: Suspicious/Unsigned execution inside Trusted path")
             }
         }
 
@@ -1505,12 +1512,23 @@ function Invoke-CleanupEngine {
                     }
                     
                 } else {
+              } else {
                     Write-Host "  [~] Trace: Targeting File System Payload..." -ForegroundColor DarkGray
+                    
+                    # بررسی پویا: اگر فایل قبلاً توسط یک مرحله دیگر پاک شده است، بیهوده خطا تولید نکن
+                    if (-not (Test-Path $threat.Forensics.Path)) {
+                        Write-Host "  [+] File already removed or neutralized in a previous step. Skipping." -ForegroundColor Green
+                        Write-GenLog "File threat already neutralized: $($threat.Forensics.Path)" "INFO"
+                        $cleanedCount++
+                        continue
+                    }
+
                     Write-GenLog "Attempting to delete file threat: $($threat.Forensics.Path)" "INFO"
                     
                     $procName = [System.IO.Path]::GetFileNameWithoutExtension($threat.Forensics.Path)
                     Write-Host "  [~] Trace: Terminating associated process [$procName]..." -ForegroundColor DarkGray
                     Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
+                    
                     
                     # Retry Loop for Locked Files
                     $success = $false
