@@ -667,13 +667,14 @@ Write-Host "`n"
     
     Write-Host "  ╚═══════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
 
-    if ($threatsFound -gt 0) {
+if ($threatsFound -gt 0) {
         Write-Host "`n  [!] ACTION REQUIRED: Proceed to Main Menu -> Option [4] to clean/quarantine." -ForegroundColor Yellow
     } else {
         Write-Host "`n  [+] STATUS: SYSTEM SHIELD ACTIVE & SECURE." -ForegroundColor Green
     }
     
     Invoke-GenPause
+}
 
 # ==============================================================================
 # [11] QUARANTINE & AES ENCRYPTION ENGINE
@@ -795,7 +796,6 @@ function Show-ThreatCard {
     Write-Host "  ╚══════════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $color
 }
 
-
 function Invoke-CleanupEngine {
     Show-GenHeader
     Write-Host "  [🧹] INITIATING THREAT NEUTRALIZATION & RECOVERY PROTOCOL" -ForegroundColor Red
@@ -841,8 +841,6 @@ function Invoke-CleanupEngine {
         if ($action -match "^[Aa]") { $autoCleanAll = $true; $action = "Q" }
 
         switch -Regex ($action) {
-            "^[Yy]" {
-switch -Regex ($action) {
             "^[Yy]" {
                 if ($threat.Forensics.Path -match "^Registry:") {
                     Write-Host "  [~] Trace: Parsing Registry target..." -ForegroundColor DarkGray
@@ -911,13 +909,6 @@ switch -Regex ($action) {
                         Write-GenLog "File deletion failed for $($threat.Forensics.Path) : $($_.Exception.Message)" "ERROR"
                     }
                 }
-                
-                # Auto-Recovery
-                if ($threat.Risk.IsGClone) { 
-                    if (Restore-HiddenOriginal -ThreatItem $threat) { Write-Host "  [+] Hidden Original Restored." -ForegroundColor Blue }
-                    if (Remove-IcoClone -ThreatItem $threat) { Write-Host "  [+] Fake ICO icon removed." -ForegroundColor Blue }
-                }
-            }
                 
                 # Auto-Recovery
                 if ($threat.Risk.IsGClone) { 
