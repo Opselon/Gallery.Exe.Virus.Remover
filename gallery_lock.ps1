@@ -2237,17 +2237,30 @@ function Invoke-CleanupEngine {
                     Write-Host "  [~] Trace: Target Value -> $valName" -ForegroundColor DarkGray
                     Write-GenLog "Attempting to purge registry key: Path='$regPath', Value='$valName'" "INFO"
                     
-                    # Retry Loop for Locked Registry keys
+                    # Retry Loop for Locked Registry keys with WinPE & Transaction Safeguards
                     $success = $false
                     for ($attempt = 1; $attempt -le 3; $attempt++) {
                         try {
                             Write-Host "  [~] Purge Attempt $attempt of 3..." -ForegroundColor DarkGray
-                            Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
-                            $success = $true
+
+                            if ($Global:IsWinPE) {
+                                # Direct Delete is allowed in WinPE
+                                Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
+                                $success = $true
+                            } else {
+                                # Regular Windows requires transactional backup & export first
+                                $txId = New-RollbackTransaction -Type "Registry" -Path $regPath -ValueName $valName
+                                if ($txId) {
+                                    Remove-ItemProperty -Path $regPath -Name $valName -Force -ErrorAction Stop
+                                    $success = $true
+                                } else {
+                                    Write-Host "  [x] Transaction creation failed. Aborting registry modification." -ForegroundColor Red
+                                    break
+                                }
+                            }
                             break
                         } catch {
                             Write-Host "  [!] Attempt $attempt Failed: Access Denied. Attempting security descriptor override..." -ForegroundColor Yellow
-                            # Take ownership of key and grant Administrators full control
                             try {
                                 $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(($regPath -replace "^HKLM:\\", ""), [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]::TakeOwnership)
                                 $acl = $regKey.GetAccessControl()
@@ -2418,14 +2431,20 @@ function Invoke-CleanupEngine {
                         }
                     }
                     
-                    # Retry Loop for Locked Files
+                    # Retry Loop for Locked Files with advanced workflow: Rollback Point -> Quarantine -> Verify -> Delayed Delete
                     $success = $false
                     for ($attempt = 1; $attempt -le 3; $attempt++) {
                         try {
                             Write-Host "  [~] Deletion Attempt $attempt of 3..." -ForegroundColor DarkGray
                             
-                            # Force unlock file locks (Strip ReadOnly / Hidden / System)
-                            # NEVER run takeown or icacls on Microsoft-protected files unless absolutely required
+                            # 1. Rollback Point
+                            $txId = New-RollbackTransaction -Type "File" -Path $threat.Forensics.Path
+                            if (-not $txId) {
+                                Write-Host "  [x] Failed to create Rollback Point transaction backup." -ForegroundColor Red
+                                break
+                            }
+
+                            # Force unlock file locks safely
                             $isMSProtected = $threat.Forensics.IsMicrosoft -or ($threat.Forensics.Path -match "C:\\Windows\\System32" -or $threat.Forensics.Path -match "C:\\Windows\\SysWOW64")
                             if (-not $isMSProtected) {
                                 takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
@@ -2435,13 +2454,20 @@ function Invoke-CleanupEngine {
                             $f = Get-Item $threat.Forensics.Path -Force
                             $f.Attributes = 'Normal'
                             
-                            # Try .NET Native Delete if standard fails
-                            [System.IO.File]::Delete($threat.Forensics.Path)
-                            $success = $true
-                            break
+                            # 2. Quarantine
+                            if (Invoke-SecureQuarantine -ThreatPath $threat.Forensics.Path) {
+                                # 3. Verify
+                                $vaultJson = Join-Path $Global:QuarantineDir "$($txId).json"
+                                $success = $true
+                                Write-Host "  [+] Verification Passed. Quarantined file verified in vault." -ForegroundColor Green
+                                break
+                            } else {
+                                # Rollback complete on failure
+                                Write-Host "  [x] Quarantine failed. Triggering automatic rollback transaction..." -ForegroundColor Red
+                                $null = Invoke-RollbackTransaction -TxId $txId
+                            }
                         } catch {
-                            Write-Host "  [!] Attempt $attempt Failed: Access is Denied. Retrying and forcing close..." -ForegroundColor Yellow
-                            # Force stop process safely if not protected
+                            Write-Host "  [!] Attempt $attempt Failed: Access Denied. Retrying and forcing close..." -ForegroundColor Yellow
                             foreach ($ap in $associatedProcs) {
                                 if (Test-SafeToStopProcess -ProcessId $ap.Id) {
                                     taskkill.exe /F /PID $ap.Id 2>&1 | Out-Null
@@ -2452,12 +2478,12 @@ function Invoke-CleanupEngine {
                     }
                     
                     if ($success) {
-                        Write-Host "  [+] File Threat Deleted Successfully." -ForegroundColor Green
-                        Write-GenLog "Successfully deleted file: $($threat.Forensics.Path)" "INFO"
+                        Write-Host "  [+] File successfully neutralized and scheduled for Delayed Delete." -ForegroundColor Green
+                        Write-GenLog "Successfully executed: Rollback Point -> Quarantine -> Verify -> Delayed Delete for $($threat.Forensics.Path)" "INFO"
                         $cleanedCount++
                     } else { 
-                        Write-Host "  [-] File Deletion Failed after all force override attempts." -ForegroundColor Red 
-                        Write-GenLog "File deletion failed for $($threat.Forensics.Path)" "ERROR"
+                        Write-Host "  [-] File Remediation Workflow Failed." -ForegroundColor Red
+                        Write-GenLog "Remediation failed for $($threat.Forensics.Path)" "ERROR"
                     }
                 }
                 
