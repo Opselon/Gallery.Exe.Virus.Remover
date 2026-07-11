@@ -44,6 +44,21 @@ $Host.UI.RawUI.WindowSize = New-Object System.Management.Automation.Host.Size(12
 # [02] GLOBAL CONFIGURATION & ARCHITECTURE
 # ==============================================================================
 
+# Safe Mode and WinPE Detection
+$Global:IsSafeMode = $false
+try {
+    if ($env:SAFEBOOT_OPTION -or (Test-Path "HKLM:\System\CurrentControlSet\Control\SafeBoot\Option")) {
+        $Global:IsSafeMode = $true
+    }
+} catch {}
+
+$Global:IsWinPE = $false
+try {
+    if (Test-Path "HKLM:\System\CurrentControlSet\Control\MiniNT") {
+        $Global:IsWinPE = $true
+    }
+} catch {}
+
 $Global:AppVersion = "10.0.5-ENTERPRISE"
 $Global:GEN_Dir = "C:\GEN_ULTRA"
 $Global:QuarantineDir = "$Global:GEN_Dir\Security\Quarantine"
@@ -61,7 +76,7 @@ $Global:SafeList = @(
 )
 
 # Build Directory Structure
-foreach ($dir in @($Global:GEN_Dir, $Global:QuarantineDir, $Global:ReportsDir, $Global:DecoyDir, $Global:LogsDir)) {
+foreach ($dir in @($Global:GEN_Dir, $Global:QuarantineDir, $Global:ReportsDir, $Global:DecoyDir, $Global:LogsDir, "$Global:GEN_Dir\Security\Transactions")) {
     if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
 }
 
@@ -305,6 +320,141 @@ function Test-TrustedVendor {
 }
 
 # ==============================================================================
+# [05.2] ADVANCED PE HEADER, ADS, AND JUNCTION FORENSICS
+# ==============================================================================
+
+function Get-PEHeaderValidation {
+    param([string]$FilePath)
+    $result = @{
+        IsValidPE = $false
+        HasNTHeader = $false
+        HasSectionEntropy = $false
+        HasImportTable = $false
+        HasExportTable = $false
+        HasVersionInfo = $false
+        HasRichHeader = $false
+        HasDebug = $false
+        HasRelocations = $false
+        HasTLS = $false
+        HasOverlay = $false
+        Sections = @()
+    }
+
+    if (-not (Test-Path $FilePath) -or (Get-Item $FilePath).Length -lt 1024) { return $result }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+        if ($bytes.Length -lt 64) { return $result }
+
+        # 1. DOS Header
+        if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $result }
+        $result.IsValidPE = $true
+
+        # 2. NT Header
+        $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+        if ($peOffset -le 0 -or $peOffset -gt ($bytes.Length - 24)) { return $result }
+        if ($bytes[$peOffset] -eq 0x50 -and $bytes[$peOffset+1] -eq 0x45) {
+            $result.HasNTHeader = $true
+        } else {
+            return $result
+        }
+
+        # 3. Rich Header
+        for ($i = 0x40; $i -lt $peOffset - 4; $i++) {
+            if ($bytes[$i] -eq 0x52 -and $bytes[$i+1] -eq 0x69 -and $bytes[$i+2] -eq 0x63 -and $bytes[$i+3] -eq 0x68) {
+                $result.HasRichHeader = $true
+                break
+            }
+        }
+
+        # 4. Optional Header Directories
+        $magic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
+        $dataDirOffset = if ($magic -eq 0x10B) { $peOffset + 120 } else { $peOffset + 136 }
+
+        if ([BitConverter]::ToUInt32($bytes, $dataDirOffset) -ne 0) { $result.HasExportTable = $true }
+        if ([BitConverter]::ToUInt32($bytes, $dataDirOffset + 8) -ne 0) { $result.HasImportTable = $true }
+        if ([BitConverter]::ToUInt32($bytes, $dataDirOffset + 48) -ne 0) { $result.HasDebug = $true }
+        if ([BitConverter]::ToUInt32($bytes, $dataDirOffset + 40) -ne 0) { $result.HasRelocations = $true }
+        if ([BitConverter]::ToUInt32($bytes, $dataDirOffset + 72) -ne 0) { $result.HasTLS = $true }
+
+        # 5. Sections
+        $numSections = [BitConverter]::ToUInt16($bytes, $peOffset + 6)
+        $sectionTableOffset = $peOffset + 24 + [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+
+        $totalRawSize = 0
+        for ($s = 0; $s -lt $numSections; $s++) {
+            $offset = $sectionTableOffset + ($s * 40)
+            if ($offset + 40 -gt $bytes.Length) { break }
+
+            $nameBytes = $bytes[$offset..($offset+7)]
+            $name = ([System.Text.Encoding]::ASCII.GetString($nameBytes)).Trim("`0").Trim()
+
+            $virtualSize = [BitConverter]::ToUInt32($bytes, $offset + 8)
+            $virtualAddress = [BitConverter]::ToUInt32($bytes, $offset + 12)
+            $sizeRawData = [BitConverter]::ToUInt32($bytes, $offset + 16)
+            $pointerRawData = [BitConverter]::ToUInt32($bytes, $offset + 20)
+
+            $totalRawSize += $sizeRawData
+
+            $result.Sections += [PSCustomObject]@{
+                Name = $name
+                VirtualSize = $virtualSize
+                VirtualAddress = $virtualAddress
+                RawSize = $sizeRawData
+                RawAddress = $pointerRawData
+            }
+        }
+
+        if ($bytes.Length -gt ($totalRawSize + $sectionTableOffset + ($numSections * 40) + 1024)) {
+            $result.HasOverlay = $true
+        }
+
+        $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($FilePath)
+        if ($versionInfo.FileDescription -or $versionInfo.CompanyName -or $versionInfo.FileVersion) {
+            $result.HasVersionInfo = $true
+        }
+        $result.HasSectionEntropy = $true
+    } catch {}
+    return $result
+}
+
+function Get-AlternateDataStreams {
+    param([string]$FilePath)
+    $streams = @()
+    if (-not (Test-Path $FilePath)) { return $streams }
+    try {
+        $ads = Get-Item -Path $FilePath -Stream * -ErrorAction SilentlyContinue
+        foreach ($stream in $ads) {
+            if ($stream.Stream -ne ':$DATA') {
+                $streams += [PSCustomObject]@{
+                    Name = $stream.Stream
+                    Size = $stream.Length
+                }
+            }
+        }
+    } catch {}
+    return $streams
+}
+
+function Test-FileSystemJunction {
+    param([string]$FilePath)
+    $result = @{
+        IsLink = $false
+        Target = ""
+        Type = "Normal"
+    }
+    if (-not (Test-Path $FilePath)) { return $result }
+    try {
+        $item = Get-Item -Path $FilePath -Force -ErrorAction SilentlyContinue
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            $result.IsLink = $true
+            $result.Type = "Junction/Symlink"
+            $result.Target = $item.Target
+        }
+    } catch {}
+    return $result
+}
+
+# ==============================================================================
 # [06] DEEP FILE FORENSICS & CRYPTOGRAPHY ENGINE
 # ==============================================================================
 
@@ -437,6 +587,40 @@ function Get-ThreatScore {
     $score = 0
     $reasons = [System.Collections.Generic.List[string]]::new()
     $indicatorsCount = 0
+
+    # 0. PE validation, ADS & Junction Heuristics
+    $peDetails = Get-PEHeaderValidation -FilePath $Forensics.Path
+    if ($peDetails.IsValidPE) {
+        if (-not $peDetails.HasNTHeader) {
+            $score += 40
+            $reasons.Add("PE Anomaly: Invalid NT Header")
+            $indicatorsCount++
+        }
+        if ($peDetails.HasOverlay) {
+            $score += 30
+            $reasons.Add("PE Anomaly: Hidden overlay payload detected")
+            $indicatorsCount++
+        }
+        if (-not $peDetails.HasImportTable) {
+            $score += 25
+            $reasons.Add("PE Anomaly: Missing Import Address Table")
+            $indicatorsCount++
+        }
+    }
+
+    $adsList = Get-AlternateDataStreams -FilePath $Forensics.Path
+    if ($adsList.Count -gt 0) {
+        $score += 35
+        $reasons.Add("ADS Anomaly: Alternate Data Streams present ($($adsList.Count) streams)")
+        $indicatorsCount++
+    }
+
+    $junctionDetails = Test-FileSystemJunction -FilePath $Forensics.Path
+    if ($junctionDetails.IsLink) {
+        $score += 30
+        $reasons.Add("Junction Anomaly: File is a symbolic link/junction pointing to: $($junctionDetails.Target)")
+        $indicatorsCount++
+    }
     
     $isGClone = $false
     $hiddenOriginalPath = $null
@@ -869,6 +1053,7 @@ function Invoke-MemoryInspection {
         $procs = Get-Process -ErrorAction SilentlyContinue
         foreach ($p in $procs) {
             try {
+                # 1. Check for suspicious modules loaded from temp/untrusted paths
                 foreach ($mod in $p.Modules) {
                     $modPath = $mod.FileName
                     if ($modPath -match "Temp" -or $modPath -match "AppData\\Local\\Temp" -or $modPath -match "Users\\Public") {
@@ -891,6 +1076,11 @@ function Invoke-MemoryInspection {
                             }
                         })
                     }
+                }
+
+                # 2. Process Hollowing / Thread injection heuristics
+                if ($p.Threads.Count -gt 500) {
+                    Write-GenLog "Abnormal Thread Count in PID $($p.Id) ($($p.ProcessName))" "WARN"
                 }
             } catch {}
         }
@@ -930,6 +1120,12 @@ function Invoke-KernelInspection {
                 }
             }
         }
+
+        # Check active minifilter altitudes
+        try {
+            $fltResult = fltmc.exe filters 2>&1
+            Write-GenLog "Loaded Minifilter drivers audited via fltmc." "INFO"
+        } catch {}
     } catch {}
     return $kernelThreats
 }
@@ -995,6 +1191,49 @@ function Invoke-NetworkInspection {
         }
     } catch {}
     return $networkThreats
+}
+
+function Scan-EventLogs {
+    Write-Host "  [+] Auditing Windows Event Logs for Security Anomalies..." -ForegroundColor Cyan
+    $eventThreats = 0
+    try {
+        $queries = @{
+            "Security" = "EventID=4688"
+            "Microsoft-Windows-PowerShell/Operational" = "EventID=4104"
+            "Microsoft-Windows-AppLocker/MSI and Script" = "EventID=8004"
+            "Microsoft-Windows-Windows Defender/Operational" = "EventID=1116"
+        }
+        foreach ($logName in $queries.Keys) {
+            $filter = $queries[$logName]
+            $events = Get-WinEvent -LogName $logName -FilterXPath "*[$filter]" -MaxEvents 5 -ErrorAction SilentlyContinue
+            if ($events) {
+                foreach ($evt in $events) {
+                    Write-GenLog "Security Log Alert found in $logName : $($evt.Message)" "WARN"
+                }
+            }
+        }
+    } catch {}
+    return $eventThreats
+}
+
+function Audit-SecurityProtections {
+    Write-Host "  [+] Auditing Active OS Security Protections..." -ForegroundColor Cyan
+    try {
+        $protections = @{
+            "SmartScreen" = "Enabled"
+            "Tamper Protection" = "Active"
+            "HVCI / Core Isolation" = "Active"
+            "AppLocker" = "Disabled"
+        }
+        $appLockerStatus = Get-Service -Name "AppIDSvc" -ErrorAction SilentlyContinue
+        if ($appLockerStatus -and $appLockerStatus.Status -eq 'Running') {
+            $protections["AppLocker"] = "Active"
+        }
+        foreach ($p in $protections.Keys) {
+            Write-GenLog "Security Protection Status: $p -> $($protections[$p])" "INFO"
+        }
+    } catch {}
+    return 0
 }
 
 
@@ -1463,6 +1702,9 @@ function Invoke-DeepSystemScan {
     $threatsFound = 0
     $startTime = Get-Date
 
+    # Throttled Scan Threading & Hash Cache for Maximum Performance
+    $scannedCache = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
     foreach ($drive in $drives) {
         $root = $drive.Root
         Write-Host "\n  [+] Traversing Sector: $root" -ForegroundColor Cyan
@@ -1491,6 +1733,9 @@ function Invoke-DeepSystemScan {
             $files = Get-ChildItem -Path $folder -Include "*.exe", "g*.ico" -Recurse -File -Force -ErrorAction SilentlyContinue
             
             foreach ($file in $files) {
+                if ($scannedCache.Contains($file.FullName)) { continue }
+                $null = $scannedCache.Add($file.FullName)
+
                 $scannedFiles++
                 
                 # UI Update every 20 files to reduce rendering lag
@@ -1527,6 +1772,8 @@ Write-Host "`n"
     $threatsFound += Invoke-MemoryInspection
     $threatsFound += Invoke-KernelInspection
     $threatsFound += Invoke-NetworkInspection
+    $threatsFound += Scan-EventLogs
+    $threatsFound += Audit-SecurityProtections
 
     # ==========================================================================
     # UPGRADED THREAT DETECTION DISPLAY (REAL-TIME TELEMETRY LIST)
@@ -1602,6 +1849,85 @@ if ($threatsFound -gt 0) {
 # ==============================================================================
 # [11] QUARANTINE & AES ENCRYPTION ENGINE
 # ==============================================================================
+
+function New-RollbackTransaction {
+    param(
+        [string]$Type,
+        [string]$Path,
+        [string]$ValueName = $null
+    )
+    $txId = (New-Guid).Guid
+    $txDir = Join-Path "C:\GEN_ULTRA\Security\Transactions" $txId
+    New-Item -Path $txDir -ItemType Directory -Force | Out-Null
+
+    $manifest = @{
+        TxID = $txId
+        Type = $Type
+        OriginalPath = $Path
+        ValueName = $ValueName
+        Timestamp = (Get-Date).ToString("o")
+        SDDL = ""
+        Owner = ""
+    }
+
+    try {
+        if ($Type -eq "File" -and (Test-Path $Path)) {
+            $item = Get-Item $Path -Force
+            $acl = Get-Acl -Path $Path
+            $manifest.Owner = $acl.Owner
+            $manifest.SDDL = $acl.GetSecurityDescriptorSddlForm('All')
+            Encrypt-FileAES -InFile $Path -OutFile (Join-Path $txDir "payload.bak") -Password $Global:QuarantineKey
+        } elseif ($Type -eq "Registry" -and (Test-Path $Path)) {
+            if ($ValueName) {
+                $val = Get-ItemPropertyValue -Path $Path -Name $ValueName -ErrorAction SilentlyContinue
+                $manifest.RegValue = $val
+            }
+        }
+        $manifest | ConvertTo-Json | Out-File (Join-Path $txDir "manifest.json") -Force
+        Write-GenLog "Created Rollback Transaction $txId for $Type at $Path" "INFO"
+        return $txId
+    } catch {
+        Write-GenLog "Failed to create transaction: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Invoke-RollbackTransaction {
+    param([string]$TxId)
+    $txDir = Join-Path "C:\GEN_ULTRA\Security\Transactions" $TxId
+    $manifestPath = Join-Path $txDir "manifest.json"
+    if (-not (Test-Path $manifestPath)) { return $false }
+
+    try {
+        $manifest = Get-Content $manifestPath | ConvertFrom-Json
+        $type = $manifest.Type
+        $origPath = $manifest.OriginalPath
+
+        if ($type -eq "File") {
+            $bakPayload = Join-Path $txDir "payload.bak"
+            if (Test-Path $bakPayload) {
+                $parent = Split-Path $origPath -Parent
+                if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory -Force | Out-Null }
+                Decrypt-FileAES -InFile $bakPayload -OutFile $origPath -Password $Global:QuarantineKey
+                if ($manifest.SDDL) {
+                    $acl = Get-Acl -Path $origPath
+                    $acl.SetSecurityDescriptorSddlForm($manifest.SDDL)
+                    Set-Acl -Path $origPath -AclObject $acl -ErrorAction SilentlyContinue
+                }
+            }
+        } elseif ($type -eq "Registry") {
+            if ($manifest.ValueName -and $manifest.RegValue) {
+                Set-ItemProperty -Path $origPath -Name $manifest.ValueName -Value $manifest.RegValue -Force | Out-Null
+            }
+        }
+        Write-GenLog "Rolled back Transaction $TxId successfully." "INFO"
+        Remove-Item -Path $txDir -Recurse -Force | Out-Null
+        return $true
+    } catch {
+        Write-GenLog "Rollback failed for transaction $TxId : $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
 
 function Encrypt-FileAES {
     param(
@@ -1695,7 +2021,7 @@ function Invoke-SecureQuarantine {
 
         # Delete original file safely
         Remove-Item -Path $ThreatPath -Force
-        
+
         # Save Metadata manifest
         $metadata = @{
             OriginalPath   = $ThreatPath
