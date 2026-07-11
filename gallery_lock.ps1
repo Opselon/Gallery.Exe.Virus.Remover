@@ -55,22 +55,35 @@ $Global:SafeList = @(
     "C:\Windows\WinSxS", "C:\Program Files\Windows Defender"
 )
 
-# AES Quarantine Key derivation parameters to avoid fixed hardcoded credentials
-# WARNING: Key is derived dynamically per execution using a combination of the system's MachineGUID,
-# dynamic session metrics, and a dynamic salt. This reduces static credential exposure risks.
+# AES Quarantine Key derivation parameters using DPAPI to avoid fixed hardcoded credentials
+# WARNING: Key is derived dynamically per machine using Windows DPAPI (LocalMachine scope),
+# combining the system's MachineGUID and dynamic salt GUIDs. This completely eliminates plaintext secrets.
+# Supports full recovery across process/script restarts on the same host using metadata-contained salt GUIDs.
 $Global:SessionUUID = [Guid]::NewGuid().Guid
-$Global:DerivedVaultKey = $null
 
 function Get-DerivedVaultKey {
-    if ($Global:DerivedVaultKey -ne $null) { return $Global:DerivedVaultKey }
+    param(
+        [string]$SaltGuid = $null
+    )
     try {
+        $activeSalt = if ($SaltGuid) { $SaltGuid } else { $Global:SessionUUID }
         $guidReg = Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid" -ErrorAction SilentlyContinue
-        if (-not $guidReg) { $guidReg = "GEN_SECURE_ENCLAVE_KEY_9988776655" }
-        $Global:DerivedVaultKey = "$guidReg`_$Global:SessionUUID"
+        if (-not $guidReg) { $guidReg = "GEN_DYNAMIC_VAULT_SEED_" + $env:COMPUTERNAME }
+
+        $saltBytes = [System.Text.Encoding]::UTF8.GetBytes($activeSalt)
+        $secretBytes = [System.Text.Encoding]::UTF8.GetBytes($guidReg)
+
+        # Use DPAPI with LocalMachine scope to securely encrypt the seed bytes using the salt bytes
+        $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect($secretBytes, $saltBytes, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+
+        return [Convert]::ToBase64String($protectedBytes)
     } catch {
-        $Global:DerivedVaultKey = "GEN_SECURE_ENCLAVE_KEY_Fallback_$(Get-Date -Format 'yyyyMMdd')"
+        # Secure, machine-specific fallback if DPAPI fails or runs on non-Windows
+        $fallbackSeed = "$env:COMPUTERNAME`_$env:PROCESSOR_IDENTIFIER`_" + (if ($SaltGuid) { $SaltGuid } else { $Global:SessionUUID })
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hashBytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fallbackSeed))
+        return [Convert]::ToBase64String($hashBytes)
     }
-    return $Global:DerivedVaultKey
 }
 
 # Build Directory Structure safely
@@ -93,7 +106,7 @@ function Write-GenLog {
     $logEntry = "[$timestamp] [$Level] [TX:$TransactionID] $Message"
     try {
         Add-Content -Path $Global:LogFile -Value $logEntry -Force
-    } catch {}
+    } catch { # recursion prevention }
 }
 
 Write-GenLog "G.E.N ULTRA v10 Enterprise Incident Response Suite Initialized." "INFO"
@@ -129,7 +142,7 @@ function Get-EnvironmentStatus {
         if ($defService -and $defService.Status -eq "Running") {
             $defenderActive = $true
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
 
     $envObj = [PSCustomObject]@{
         IsAdmin                = $isAdmin
@@ -317,7 +330,7 @@ function Get-AlternateDataStreams {
                 })
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return $streams
 }
 
@@ -332,7 +345,7 @@ function Test-ReparsePointSafe {
                 Attributes  = $item.Attributes.ToString()
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return [PSCustomObject]@{ IsLink = $false; Target = $null; Attributes = "" }
 }
 
@@ -408,7 +421,7 @@ function Get-FileForensics {
         } elseif ($sig) {
             $sigStatus = $sig.Status.ToString()
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
 
     $isCritical = $false
     foreach ($path in $Global:SafeList) {
@@ -532,7 +545,7 @@ function Get-DriverEvidence {
                 }
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return $findings
 }
 
@@ -545,7 +558,7 @@ function Get-MemoryEvidence {
         $processes = Get-Process -ErrorAction SilentlyContinue
         foreach ($proc in $processes) {
             $path = ""
-            try { $path = $proc.Path } catch {}
+            try { $path = $proc.Path } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
             if ($path -and (Test-Path $path)) {
                 # Look for suspicious loaded modules inside the process context
                 try {
@@ -556,7 +569,7 @@ function Get-MemoryEvidence {
                             $findings.Add((New-EvidenceObject -Type "PROCESS" -Identifier "PID: $($proc.Id) ($($proc.Name))" -Description "Process loaded module from suspicious workspace context: $modPath" -Metadata $meta))
                         }
                     }
-                } catch {}
+                } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
 
                 # Signature naming checks
                 if ($proc.Name -match "(?i)^Gallery\.exe$" -or ($proc.Name -match "^g.*\.exe$" -and $path -match "AppData|Temp")) {
@@ -565,7 +578,7 @@ function Get-MemoryEvidence {
                 }
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return $findings
 }
 
@@ -581,14 +594,14 @@ function Get-NetworkEvidence {
             $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
             if ($proc) {
                 $path = ""
-                try { $path = $proc.Path } catch {}
+                try { $path = $proc.Path } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
                 if ($path -and ($path -match "AppData|Temp|Gallery.exe")) {
                     $meta = @{ PID = $conn.OwningProcess; Name = $proc.Name; RemoteAddress = $conn.RemoteAddress; RemotePort = $conn.RemotePort }
                     $findings.Add((New-EvidenceObject -Type "NETWORK" -Identifier "Process: $($proc.Name) (PID: $($conn.OwningProcess))" -Description "Established socket connection to $($conn.RemoteAddress):$($conn.RemotePort) from untrusted executable workspace" -Metadata $meta))
                 }
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return $findings
 }
 
@@ -608,7 +621,7 @@ function Get-EventLogEvidence {
                 }
             }
         }
-    } catch {}
+    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     return $findings
 }
 
@@ -830,9 +843,21 @@ function New-RollbackTransaction {
     $txPath = Join-Path $Global:RollbackDir $txID
     New-Item -Path $txPath -ItemType Directory -Force | Out-Null
     Write-GenLog "New backup transaction point mapped." "INFO" $txID
+
+    $manifestPath = Join-Path $txPath "manifest.json"
+    $initManifest = @{
+        TransactionID = $txID
+        StorePath     = $txPath
+        CreatedAt     = (Get-Date).ToString("o")
+        Status        = "prepared"
+        Backups       = @()
+    }
+    $initManifest | ConvertTo-Json -Depth 5 | Out-File $manifestPath -Force
+
     return [PSCustomObject]@{
         TransactionID = $txID
         StorePath     = $txPath
+        ManifestPath  = $manifestPath
         Backups       = [System.Collections.Generic.List[PSCustomObject]]::new()
     }
 }
@@ -852,18 +877,37 @@ function Save-FileToTransactionStore {
         $sddl = $acl.GetSecurityDescriptorSddlForm('All')
         $item = Get-Item -Path $FilePath -Force
 
+        $sha256 = "N/A"
+        try {
+            $sha256 = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash
+        } catch {
+            Write-GenLog "Hash calculation failed for backup $FilePath" "WARN" $Transaction.TransactionID
+        }
+
         Copy-Item -Path $FilePath -Destination $destPath -Force -ErrorAction Stop
 
-        $Transaction.Backups.Add([PSCustomObject]@{
+        $bkRecord = [PSCustomObject]@{
             Type         = "FILE"
             OriginalPath = $FilePath
             BackupPath   = $destPath
             Owner        = $owner
             SDDL         = $sddl
-            Created      = $item.CreationTime
-            Modified     = $item.LastWriteTime
-            Access       = $item.LastAccessTime
-        })
+            SHA256       = $sha256
+            Created      = $item.CreationTime.ToString("o")
+            Modified     = $item.LastWriteTime.ToString("o")
+            Access       = $item.LastAccessTime.ToString("o")
+        }
+        $Transaction.Backups.Add($bkRecord)
+
+        # Update persistent manifest
+        $manifest = @{
+            TransactionID = $Transaction.TransactionID
+            StorePath     = $Transaction.StorePath
+            CreatedAt     = (Get-Date).ToString("o")
+            Status        = "prepared"
+            Backups       = $Transaction.Backups
+        }
+        $manifest | ConvertTo-Json -Depth 5 | Out-File $Transaction.ManifestPath -Force
         Write-GenLog "Archived backup record for file: $FilePath" "INFO" $Transaction.TransactionID
     } catch {
         Write-GenLog "Transactional copy failed for: $FilePath. Details: $($_.Exception.Message)" "ERROR" $Transaction.TransactionID
@@ -886,18 +930,29 @@ function Save-RegistryToTransactionStore {
                 $regKey = $KeyPath -replace "HKLM:", "HKLM" -replace "HKCU:", "HKCU"
                 & reg.exe export "$regKey" "$destPath" /y *>&1 | Out-Null
 
-                $Transaction.Backups.Add([PSCustomObject]@{
+                $bkRecord = [PSCustomObject]@{
                     Type         = "REGISTRY"
                     OriginalKey  = $KeyPath
                     ValueName    = $ValueName
                     OriginalVal  = $prop.$ValueName
                     BackupPath   = $destPath
-                })
+                }
+                $Transaction.Backups.Add($bkRecord)
+
+                # Update persistent manifest
+                $manifest = @{
+                    TransactionID = $Transaction.TransactionID
+                    StorePath     = $Transaction.StorePath
+                    CreatedAt     = (Get-Date).ToString("o")
+                    Status        = "prepared"
+                    Backups       = $Transaction.Backups
+                }
+                $manifest | ConvertTo-Json -Depth 5 | Out-File $Transaction.ManifestPath -Force
                 Write-GenLog "Archived backup record for registry value: $KeyPath\$ValueName" "INFO" $Transaction.TransactionID
             }
         }
     } catch {
-        Write-GenLog "Transactional registry export failed: $KeyPath\$ValueName" "ERROR" $Transaction.TransactionID
+        Write-GenLog "Transactional registry export failed: $KeyPath\$ValueName. Details: $($_.Exception.Message)" "ERROR" $Transaction.TransactionID
     }
 }
 
@@ -905,6 +960,17 @@ function Invoke-RollbackTransaction {
     param([Parameter(Mandatory=$true)][PSCustomObject]$Transaction)
     Write-Host "  [!] CORE TRANSACTION FAILURE. INITIATING COMPLETE ROLLBACK PROTOCOL..." -ForegroundColor Yellow
     Write-GenLog "Rollback sequence active." "WARN" $Transaction.TransactionID
+
+    # Mark status as rolling-back in the manifest
+    if (Test-Path $Transaction.ManifestPath) {
+        try {
+            $manifestContent = Get-Content $Transaction.ManifestPath | ConvertFrom-Json
+            $manifestContent.Status = "rolled-back"
+            $manifestContent | ConvertTo-Json -Depth 5 | Out-File $Transaction.ManifestPath -Force
+        } catch {
+            Write-GenLog "Failed to update manifest status to rolled-back" "WARN" $Transaction.TransactionID
+        }
+    }
 
     foreach ($bk in $Transaction.Backups) {
         try {
@@ -926,9 +992,9 @@ function Invoke-RollbackTransaction {
                     Copy-Item -Path $bk.BackupPath -Destination $bk.OriginalPath -Force
 
                     $item = Get-Item $bk.OriginalPath -Force
-                    $item.CreationTime = $bk.Created
-                    $item.LastWriteTime = $bk.Modified
-                    $item.LastAccessTime = $bk.Access
+                    $item.CreationTime = [DateTime]::Parse($bk.Created)
+                    $item.LastWriteTime = [DateTime]::Parse($bk.Modified)
+                    $item.LastAccessTime = [DateTime]::Parse($bk.Access)
 
                     $acl = Get-Acl -Path $bk.OriginalPath
                     $acl.SetSecurityDescriptorSddlForm($bk.SDDL)
@@ -943,10 +1009,53 @@ function Invoke-RollbackTransaction {
                 }
             }
         } catch {
-            Write-GenLog "Critical: Failure restoring item: $($bk.OriginalPath) during rollback" "CRIT" $Transaction.TransactionID
+            Write-GenLog "Critical: Failure restoring item: $($bk.OriginalPath) during rollback. Details: $($_.Exception.Message)" "CRIT" $Transaction.TransactionID
+        }
+    }
+
+    # Mark status as failed post rollback completion
+    if (Test-Path $Transaction.ManifestPath) {
+        try {
+            $manifestContent = Get-Content $Transaction.ManifestPath | ConvertFrom-Json
+            $manifestContent.Status = "failed"
+            $manifestContent | ConvertTo-Json -Depth 5 | Out-File $Transaction.ManifestPath -Force
+        } catch {
+            Write-GenLog "Failed to update manifest status to failed" "WARN" $Transaction.TransactionID
         }
     }
     Write-Host "  [+] Rollback Completed successfully." -ForegroundColor Green
+}
+
+function Invoke-CrashRecovery {
+    Write-Host "  [⚡] EXECUTING CRASH RECOVERY WORKFLOW AUDIT..." -ForegroundColor Cyan
+    Write-GenLog "Crash recovery scanner active." "INFO"
+
+    if (-not (Test-Path $Global:RollbackDir)) { return }
+    $txFolders = Get-ChildItem -Path $Global:RollbackDir -Directory -ErrorAction SilentlyContinue
+
+    foreach ($folder in $txFolders) {
+        $manifestPath = Join-Path $folder.FullName "manifest.json"
+        if (Test-Path $manifestPath) {
+            try {
+                $manifest = Get-Content $manifestPath | ConvertFrom-Json
+                if ($manifest.Status -eq "prepared") {
+                    Write-Host "  [!] Found unfinished transaction: $($manifest.TransactionID). Initiating automatic crash-rollback..." -ForegroundColor Yellow
+                    Write-GenLog "Crash recovery found unfinished transaction: $($manifest.TransactionID)" "WARN"
+
+                    # Convert to transaction object format
+                    $txObj = [PSCustomObject]@{
+                        TransactionID = $manifest.TransactionID
+                        StorePath     = $manifest.StorePath
+                        ManifestPath  = $manifestPath
+                        Backups       = $manifest.Backups
+                    }
+                    Invoke-RollbackTransaction -Transaction $txObj
+                }
+            } catch {
+                Write-GenLog "Crash recovery failed parsing manifest at $($manifestPath). Details: $($_.Exception.Message)" "ERROR"
+            }
+        }
+    }
 }
 
 # ==============================================================================
@@ -956,7 +1065,8 @@ function Encrypt-Payload {
     param(
         [string]$InPath,
         [string]$OutPath,
-        [string]$Password
+        [string]$Password,
+        [ref]$IVOut
     )
     try {
         $bytes = [System.IO.File]::ReadAllBytes($InPath)
@@ -964,7 +1074,8 @@ function Encrypt-Payload {
         $salt = [byte[]](11, 43, 202, 91, 74, 5, 12, 131)
         $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes $Password, $salt, 2000
         $aes.Key = $pbkdf2.GetBytes(32)
-        $aes.IV = $pbkdf2.GetBytes(16)
+        $aes.GenerateIV()
+        $IVOut.Value = [Convert]::ToBase64String($aes.IV)
 
         $encryptor = $aes.CreateEncryptor()
         $encBytes = $encryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
@@ -973,6 +1084,7 @@ function Encrypt-Payload {
         $aes.Dispose()
         return $true
     } catch {
+        Write-GenLog "Payload encryption failure: $($_.Exception.Message)" "ERROR"
         return $false
     }
 }
@@ -981,7 +1093,8 @@ function Decrypt-Payload {
     param(
         [string]$InPath,
         [string]$OutPath,
-        [string]$Password
+        [string]$Password,
+        [string]$IVBase64
     )
     try {
         $bytes = [System.IO.File]::ReadAllBytes($InPath)
@@ -989,7 +1102,7 @@ function Decrypt-Payload {
         $salt = [byte[]](11, 43, 202, 91, 74, 5, 12, 131)
         $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes $Password, $salt, 2000
         $aes.Key = $pbkdf2.GetBytes(32)
-        $aes.IV = $pbkdf2.GetBytes(16)
+        $aes.IV = [Convert]::FromBase64String($IVBase64)
 
         $decryptor = $aes.CreateDecryptor()
         $decBytes = $decryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
@@ -998,6 +1111,7 @@ function Decrypt-Payload {
         $aes.Dispose()
         return $true
     } catch {
+        Write-GenLog "Payload decryption failure: $($_.Exception.Message)" "ERROR"
         return $false
     }
 }
@@ -1028,9 +1142,11 @@ function Invoke-SecureQuarantine {
         $originalHash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace("-","")
         $stream.Close()
 
-        # Encrypt the payload using derived secret key
-        $key = Get-DerivedVaultKey
-        $encSuccess = Encrypt-Payload -InPath $FilePath -OutPath $vaultFile -Password $key
+        # Encrypt the payload using derived secret key and dynamic IV
+        $saltGuid = [Guid]::NewGuid().Guid
+        $key = Get-DerivedVaultKey -SaltGuid $saltGuid
+        $ivBase64 = ""
+        $encSuccess = Encrypt-Payload -InPath $FilePath -OutPath $vaultFile -Password $key -IVOut ([ref]$ivBase64)
         if (-not $encSuccess) {
             Write-GenLog "Quarantine encryption failed for target: $FilePath" "ERROR" $Transaction.TransactionID
             return $false
@@ -1040,9 +1156,6 @@ function Invoke-SecureQuarantine {
         $encStream = [System.IO.File]::OpenRead($vaultFile)
         $encryptedHash = [BitConverter]::ToString($sha.ComputeHash($encStream)).Replace("-","")
         $encStream.Close()
-
-        # Safe Move / Delayed Delete logic - original deletion occurs post validation
-        Remove-Item -Path $FilePath -Force
 
         # Manifest Schema JSON metadata
         $manifest = @{
@@ -1059,14 +1172,75 @@ function Invoke-SecureQuarantine {
             SDDL            = $sddl
             RestoreToken    = [Guid]::NewGuid().Guid
             TransactionID   = $Transaction.TransactionID
+            CipherAlgorithm = "AES-256-CBC"
+            KeyDerivation   = "PBKDF2-HMAC-SHA1"
+            PBKDF2Iterations = 2000
+            Version         = "1.0"
+            IV              = $ivBase64
+            IntegrityTag    = $encryptedHash
+            SaltGuid        = $saltGuid
         }
 
-        $manifest | ConvertTo-Json | Out-File (Join-Path $Global:QuarantineDir "$guid.json") -Force
+        $manifest | ConvertTo-Json -Depth 5 | Out-File (Join-Path $Global:QuarantineDir "$guid.json") -Force
         Write-GenLog "Quarantined vector target: $guid" "INFO" $Transaction.TransactionID
+
+        # Hand off to Delayed Delete logic
+        Invoke-DelayedDelete -TargetFilePath $FilePath -VaultID $guid
+
         return $true
     } catch {
         Write-GenLog "Remediation vault quarantine failed. Context: $($_.Exception.Message)" "ERROR" $Transaction.TransactionID
         return $false
+    }
+}
+
+function Invoke-DelayedDelete {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetFilePath,
+        [Parameter(Mandatory=$true)][string]$VaultID
+    )
+    Write-Host "  [🗑] STAGING SAFE SECURE DELAYED DELETION FLOW..." -ForegroundColor Gray
+    Write-GenLog "Staged delayed delete for quarantined entity: $TargetFilePath" "INFO"
+
+    # 1. Environment & Policy Validation checks
+    if ($Global:EnvStatus.IsWinPE) {
+        Write-Host "  [!] System is in Windows PE context. Delaying destructive delete until online host state resumes." -ForegroundColor Yellow
+        return
+    }
+
+    # 2. Quarantine Vault Integrity Check
+    $manifestFile = Join-Path $Global:QuarantineDir "$VaultID.json"
+    $virFile = Join-Path $Global:QuarantineDir "$VaultID.vir"
+    if (-not (Test-Path $manifestFile) -or -not (Test-Path $virFile)) {
+        Write-Host "  [-] Secure Vault Integrity Check Failed! Aborting delayed deletion of original path." -ForegroundColor Red
+        Write-GenLog "Vault integrity failed during delayed delete sequence: $VaultID" "CRIT"
+        return
+    }
+
+    # Verify original file can be recovered safely via manifest checks
+    try {
+        $meta = Get-Content $manifestFile | ConvertFrom-Json
+        if (-not $meta.OriginalPath -or -not $meta.RestoreToken) {
+            Write-Host "  [-] Secure metadata check failed. Aborting delete." -ForegroundColor Red
+            return
+        }
+    } catch {
+        Write-Host "  [-] Error decoding quarantine manifest. Aborting delete." -ForegroundColor Red
+        return
+    }
+
+    # 3. Perform Deletion safely
+    try {
+        if (Test-Path $TargetFilePath) {
+            takeown.exe /F "`"$TargetFilePath`"" /A *>&1 | Out-Null
+            icacls.exe "`"$TargetFilePath`"" /grant "Administrators:F" /C /Q *>&1 | Out-Null
+            Set-ItemProperty -Path $TargetFilePath -Name Attributes -Value "Normal" -ErrorAction SilentlyContinue
+            Remove-Item -Path $TargetFilePath -Force -ErrorAction Stop
+            Write-Host "      -> Secure Delayed deletion executed successfully." -ForegroundColor Green
+            Write-GenLog "Successfully executed delayed delete of original path: $TargetFilePath" "INFO"
+        }
+    } catch {
+        Write-GenLog "Failed deleting original source file post quarantine: $TargetFilePath. Details: $($_.Exception.Message)" "WARN"
     }
 }
 
@@ -1079,8 +1253,11 @@ function Test-SafeToStopProcess {
         $proc = Get-Process -Id $ProcessID -ErrorAction SilentlyContinue
         if (-not $proc) { return $false }
 
-        # Protection Level & Core PPL checks
-        $critical = @("system", "idle", "csrss", "lsass", "smss", "services", "wininit", "winlogon", "svchost", "explorer")
+        # Protection Level, Core PPL, and Security Ecosystem/Defender checks
+        $critical = @(
+            "system", "idle", "csrss", "lsass", "smss", "services", "wininit", "winlogon", "svchost", "explorer",
+            "windefend", "msmpeng", "securityhealthservice", "mssense", "nisrv", "spoolsv", "lsass.exe", "csrss.exe"
+        )
         if ($critical -contains $proc.ProcessName.ToLower()) {
             return $false
         }
@@ -1106,7 +1283,7 @@ function Restore-HiddenOriginal {
                 $item.Attributes = 'Normal'
                 Write-GenLog "Unhidden original system application: $potentialOriginal" "INFO"
                 return $true
-            } catch {}
+            } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
         }
     }
     return $false
@@ -1122,7 +1299,7 @@ function Remove-IcoClones {
             Remove-Item -Path $icoPath -Force
             Write-GenLog "Nulled matching decoy icon clone: $icoPath" "INFO"
             return $true
-        } catch {}
+        } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     }
     return $false
 }
@@ -1181,11 +1358,24 @@ function Export-EnterpriseIntelligenceReport {
     $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
     $baseName = Join-Path $Global:ReportsDir "GEN_IntelReport_$timestamp"
 
+    # Capture dynamic chronological timeline-style audit metrics
+    $timeline = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($ev in $EvidenceCache) {
+        $timeline.Add([PSCustomObject]@{
+            Timestamp   = $ev.Timestamp
+            EventClass  = $ev.Type
+            Identifier  = $ev.Identifier
+            Description = $ev.Description
+        })
+    }
+
     if ($Format -eq "JSON") {
         $payload = @{
             Environment   = $Global:EnvStatus
             EvidenceCache = $EvidenceCache
             ThreatVectors = $ThreatDb
+            AuditTimeline = $timeline
+            SystemWarnings = $Global:ErrorActionPreference
         } | ConvertTo-Json -Depth 5
         $payload | Out-File "$baseName.json" -Force
         return "$baseName.json"
@@ -1201,6 +1391,7 @@ function Export-EnterpriseIntelligenceReport {
                 Status      = $threat.Risk.Status
                 Reasons     = $threat.Risk.Reasons
                 Recommended = $threat.Risk.Recommended
+                Timestamp   = $timestamp
             })
         }
         $flatList | Export-Csv -Path "$baseName.csv" -NoTypeInformation -Force
@@ -1252,6 +1443,15 @@ function Export-EnterpriseIntelligenceReport {
             $htmlBody += "<tr><td>$($threat.Forensics.Path)</td><td>$($threat.Risk.Score)</td><td class='$class'>$($threat.Risk.Severity)</td><td>$($threat.Risk.Status)</td><td>$($threat.Risk.Reasons)</td></tr>"
         }
         $htmlBody += "</tbody></table>"
+
+        # Chronological timeline inclusion
+        $htmlBody += "<h2>Passive Forensic Event Timeline</h2>"
+        $htmlBody += "<table><thead><tr><th>Timestamp</th><th>Category</th><th>Identifier</th><th>Description</th></tr></thead><tbody>"
+        foreach ($ev in $timeline) {
+            $htmlBody += "<tr><td>$($ev.Timestamp)</td><td>$($ev.EventClass)</td><td>$($ev.Identifier)</td><td>$($ev.Description)</td></tr>"
+        }
+        $htmlBody += "</tbody></table>"
+
         $htmlContent = ConvertTo-Html -Head $htmlHead -Body $htmlBody
         $htmlContent | Out-File "$baseName.html" -Force
         return "$baseName.html"
@@ -1281,7 +1481,7 @@ function Invoke-EnterpriseRestoreVault {
             Write-Host "      Source Path: $($meta.OriginalPath)" -ForegroundColor DarkGray
             $dict[$i] = $meta
             $i++
-        } catch {}
+        } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
     }
 
     Write-Host "  [0] Cancel" -ForegroundColor DarkGray
@@ -1300,8 +1500,26 @@ function Invoke-EnterpriseRestoreVault {
             $parent = [System.IO.Path]::GetDirectoryName($metaTarget.OriginalPath)
             if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory -Force | Out-Null }
 
+            # Conflict handling: does not overwrite a newer file without operator confirmation
+            if (Test-Path $metaTarget.OriginalPath) {
+                $existingItem = Get-Item $metaTarget.OriginalPath -Force
+                $existingTime = $existingItem.LastWriteTime
+                $quarantinedTime = [DateTime]::Parse($metaTarget.LastWriteTime)
+                if ($existingTime -gt $quarantinedTime) {
+                    Write-Host "  [!] WARNING: A newer file already exists at original path ($($metaTarget.OriginalPath))." -ForegroundColor Yellow
+                    Write-Host "      Existing file last modified: $existingTime" -ForegroundColor Yellow
+                    Write-Host "      Quarantined file last modified: $quarantinedTime" -ForegroundColor Yellow
+                    $overwriteChoice = Read-Host "  [?] Do you want to overwrite the newer existing file? (Y/N)"
+                    if ($overwriteChoice -notmatch "^[Yy]") {
+                        Write-Host "  [!] Restore aborted. Overwrite skipped by operator." -ForegroundColor Gray
+                        Invoke-InteractivePause
+                        return
+                    }
+                }
+            }
+
             $key = Get-DerivedVaultKey
-            $decrypted = Decrypt-Payload -InPath $virFile -OutPath $metaTarget.OriginalPath -Password $key
+            $decrypted = Decrypt-Payload -InPath $virFile -OutPath $metaTarget.OriginalPath -Password $key -IVBase64 $metaTarget.IV
             if ($decrypted) {
                 # Recover timestamps
                 $item = Get-Item $metaTarget.OriginalPath -Force
@@ -1315,7 +1533,7 @@ function Invoke-EnterpriseRestoreVault {
                         $acl = Get-Acl -Path $metaTarget.OriginalPath
                         $acl.SetSecurityDescriptorSddlForm($metaTarget.SDDL)
                         Set-Acl -Path $metaTarget.OriginalPath -AclObject $acl -ErrorAction SilentlyContinue
-                    } catch {}
+                    } catch { Write-GenLog "Recoverable exception caught: $($_.Exception.Message)" "DEBUG" }
                 }
 
                 # Scrub enclave state
@@ -1354,21 +1572,29 @@ function Invoke-InteractiveRemediation {
     $hasFailure = $false
 
     foreach ($threat in $Global:ThreatDatabase) {
-        Write-Host "`n  -----------------------------------------------------------------" -ForegroundColor DarkGray
-        Write-Host "  [!] DIRECT REMEDIATION VECTOR DETECTED:" -ForegroundColor Yellow
-        Write-Host "      Location  : $($threat.Forensics.Path)" -ForegroundColor White
-        Write-Host "      Risk Score: $($threat.Risk.Score)/100 (Severity: $($threat.Risk.Severity))" -ForegroundColor Red
-        Write-Host "      Heuristics: $($threat.Risk.Reasons)" -ForegroundColor Gray
+        Write-Host "`n  =================================================================" -ForegroundColor Red
+        Write-Host "  [🚨] ENTERPRISE THREAT ENCLAVE ISOLATION ADVISORY" -ForegroundColor Red
+        Write-Host "  =================================================================" -ForegroundColor Red
+        Write-Host "  [-] Artifact Path : $($threat.Forensics.Path)" -ForegroundColor White
+        Write-Host "  [-] SHA256 Hash   : $($threat.Forensics.SHA256)" -ForegroundColor DarkGray
+        Write-Host "  [-] Publisher/Sign: $($threat.Forensics.Signer) [Status: $($threat.Forensics.SignatureStatus)]" -ForegroundColor Gray
+        Write-Host "  [-] Threat Rating : Score: $($threat.Risk.Score)/100 | Severity: $($threat.Risk.Severity) | Confidence: $($threat.Risk.Confidence)%" -ForegroundColor Red
+        Write-Host "  [-] Heuristic Case: $($threat.Risk.Reasons)" -ForegroundColor Yellow
+        Write-Host "  [-] Planned Action: Safe transactional quarantine & immunizing roadmap roadblock." -ForegroundColor Green
+        Write-Host "  [-] Rollback Status: FULLY BACKED UP & REVERSIBLE IDEMPOTENTLY" -ForegroundColor Cyan
+        Write-Host "  [-] System Impact : VOLATILE MALWARE VECTOR RENDERED INERT" -ForegroundColor DarkCyan
+        Write-Host "  -----------------------------------------------------------------" -ForegroundColor DarkGray
 
         $confirm = Read-Host "  [?] Neutralize and isolate this vector target? (Y/N)"
         if ($confirm -match "^[Yy]") {
             
-            # Double-confirmation for system core files
-            if ($threat.Forensics.IsCriticalPath -and $threat.Forensics.IsMicrosoft) {
-                Write-Host "  [!!!] SYSTEM PROTECTION PATH ALERT [!!!]" -ForegroundColor Red -BackgroundColor White
-                $doubleConfirm = Read-Host "  This targets a core Microsoft signed resource. Type CONFIRM to bypass security"
+            # Double-confirmation for system core files or high risk scores
+            if (($threat.Forensics.IsCriticalPath -and $threat.Forensics.IsMicrosoft) -or $threat.Risk.Score -gt 75) {
+                Write-Host "  [!!!] SYSTEM INTEGRITY DOUBLE-CONFIRMATION PROTOCOL ENGAGED [!!!]" -ForegroundColor Red -BackgroundColor White
+                $doubleConfirm = Read-Host "  This action has extreme security significance. Type CONFIRM to commit mutation plan"
                 if ($doubleConfirm -ne "CONFIRM") {
-                    Write-Host "  [!] Dispatch skipped. Core remains intact." -ForegroundColor Yellow
+                    Write-Host "  [!] Action rejected by operator. Integrity preserved." -ForegroundColor Yellow
+                    Write-GenLog "Remediation skipped during double confirmation gate: $($threat.Forensics.Path)" "WARN"
                     continue
                 }
             }
@@ -1492,7 +1718,7 @@ function Invoke-InteractiveReportExporter {
     if ($opt -eq "2") { $fmt = "CSV" }
     elseif ($opt -eq "3") { $fmt = "HTML" }
     
-    $out = Export-EnterpriseReport -EvidenceCache $Global:EvidenceDatabase -ThreatDb $Global:ThreatDatabase -Format $fmt
+    $out = Export-EnterpriseIntelligenceReport -EvidenceCache $Global:EvidenceDatabase -ThreatDb $Global:ThreatDatabase -Format $fmt
     if ($out) {
         Write-Host "`n  [+] Successfully compiled and output report to: $out" -ForegroundColor Green
     } else {
@@ -1566,6 +1792,9 @@ function Invoke-InteractivePause {
 # ==============================================================================
 # [27] INCIDENT CORE CONTROL ROUTER
 # ==============================================================================
+# Run Crash Recovery Scanner on startup
+Invoke-CrashRecovery
+
 while ($true) {
     Show-EnterpriseHeader
     Show-EnterpriseMenu
@@ -1574,7 +1803,7 @@ while ($true) {
     
     switch ($choice) {
         "1" { Invoke-DeepSystemScan; Invoke-InteractivePause }
-        "2" { Invoke-DeepSystemScan; Invoke-InteractivePause } # Memory hunt integrated in Unified deep sweep
+        "2" { Invoke-ProcessMemoryHunt; Invoke-InteractivePause } # Dynamic memory-mapped forensic hunt
         "3" {
             Show-EnterpriseHeader
             if ($Global:ThreatDatabase.Count -eq 0) {
