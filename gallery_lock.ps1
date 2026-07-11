@@ -1460,46 +1460,144 @@ function Invoke-CleanupEngine {
 
                     $success = $false
                     
-                    # Attempt 1: Standard schtasks
-                    Write-Host "  [~] Tier 1: Attempting Standard API Task Deletion..." -ForegroundColor DarkGray
-                    $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$cleanTaskName`" /F" -Wait -NoNewWindow -PassThru
-                    if ($schProc.ExitCode -eq 0) { $success = $true }
-                    
-                    # Attempt 2: Native Cmdlet Backup
+                   # Tier 1: COM Object Deletion (Safest, no file or permission tampering)
+                    Write-Host "  [~] Tier 1: Attempting Task Deletion via Native COM API..." -ForegroundColor DarkGray
+                    Write-GenLog "Attempting Native COM API deletion for task: $cleanTaskName" "INFO"
+                    try {
+                        $service = New-Object -ComObject Schedule.Service
+                        $service.Connect()
+                        $taskFolder = "\"
+                        $taskNameOnly = $cleanTaskName
+                        if ($cleanTaskName -match "\\") {
+                            $lastBackslash = $cleanTaskName.LastIndexOf("\")
+                            if ($lastBackslash -gt 0) {
+                                $taskFolder = $cleanTaskName.Substring(0, $lastBackslash)
+                                $taskNameOnly = $cleanTaskName.Substring($lastBackslash + 1)
+                            } else {
+                                $taskNameOnly = $cleanTaskName.Replace("\", "")
+                            }
+                        }
+                        $folder = $service.GetFolder($taskFolder)
+                        $folder.DeleteTask($taskNameOnly, 0)
+                        $success = $true
+                        Write-Host "  [+] Task deleted successfully via COM API." -ForegroundColor Green
+                        Write-GenLog "Successfully deleted scheduled task via COM API: $cleanTaskName" "INFO"
+                    } catch {
+                        Write-Host "  [!] COM API deletion failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-GenLog "COM API deletion failed for task $cleanTaskName : $($_.Exception.Message)" "WARN"
+                    }
+
+                    # Tier 2: PowerShell Native Cmdlet Fallback
                     if (-not $success) {
-                        Write-Host "  [!] Tier 1 Failed. Engaging Tier 2 (Native PowerShell Command)..." -ForegroundColor Yellow
+                        Write-Host "  [~] Tier 2: Attempting Native PowerShell Command (Unregister-ScheduledTask)..." -ForegroundColor DarkGray
                         try {
                             Unregister-ScheduledTask -TaskName $cleanTaskName -Confirm:$false -ErrorAction Stop
                             $success = $true
-                        } catch {}
+                            Write-Host "  [+] Task deleted successfully via Cmdlet." -ForegroundColor Green
+                            Write-GenLog "Successfully unregistered scheduled task via Cmdlet: $cleanTaskName" "INFO"
+                        } catch {
+                            Write-Host "  [!] Native PowerShell Command Failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                        }
                     }
-                    
-                    # Attempt 3: Direct Core Surgical Purge (Bypasses "Access is Denied" on schtasks.exe)
+
+                    # Tier 3: Command Line Utility Fallback (schtasks.exe)
                     if (-not $success) {
-                        Write-Host "  [!] Tier 2 Failed (Access Denied). Engaging Tier 3 (Physical Disk & Registry Core Wipe)..." -ForegroundColor Red
+                        Write-Host "  [~] Tier 3: Attempting Standard CLI Task Deletion (schtasks.exe)..." -ForegroundColor DarkGray
                         try {
-                            # Physical Task File Deletion
-                            if ($xmlPath -and (Test-Path $xmlPath)) {
-                                takeown.exe /F "`"$xmlPath`"" /A 2>&1 | Out-Null
-                                icacls.exe "`"$xmlPath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
-                                [System.IO.File]::Delete($xmlPath)
+                            $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$cleanTaskName`" /F" -Wait -NoNewWindow -PassThru -ErrorAction Stop
+                            if ($schProc.ExitCode -eq 0) {
+                                $success = $true
+                                Write-Host "  [+] Task deleted successfully via schtasks.exe." -ForegroundColor Green
+                                Write-GenLog "Successfully deleted task via schtasks.exe: $cleanTaskName" "INFO"
                             }
-                            
-                            # Registry entries sweep (Direct Hive deletion)
-                            $regPaths = @(
-                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName",
-                                "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\$guid"
-                            )
-                            foreach ($rp in $regPaths) {
-                                if (Test-Path $rp) {
-                                    # Override key lock permissions
-                                    takeown.exe /F "`"$rp`"" /A 2>&1 | Out-Null
-                                    Remove-Item -Path $rp -Recurse -Force -ErrorAction SilentlyContinue
+                        } catch {
+                            Write-Host "  [!] schtasks.exe Deletion Failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                        }
+                    }
+
+                    # Tier 4: Surgical File Deletion Fallback (Surgical ACL Backup & Restore)
+                    if (-not $success) {
+                        # Rule 3 Safeguard: Protected System Tasks Check
+                        $isProtectedSystemTask = $cleanTaskName -match "^(?i)Microsoft\\Windows"
+                        $isVerifiedMaliciousFile = $false
+                        if ($threat.Forensics -and $threat.Forensics.Path -and (Test-Path $threat.Forensics.Path)) {
+                            if ($threat.Forensics.SignatureStatus -ne "Valid" -or -not $threat.Forensics.IsMicrosoft) {
+                                $isVerifiedMaliciousFile = $true
+                            }
+                        }
+
+                        if ($isProtectedSystemTask -and -not $isVerifiedMaliciousFile) {
+                            Write-Host "  [!] Direct filesystem deletion blocked: Protected Windows Task ($cleanTaskName) is unmodified." -ForegroundColor Yellow
+                            Write-GenLog "Direct filesystem/ownership modification blocked for unmodified system task: $cleanTaskName" "WARN"
+                        } else {
+                            Write-Host "  [~] Tier 4: Engaging Surgical Direct File Deletion..." -ForegroundColor Red
+                            $parentDir = if ($xmlPath) { Split-Path $xmlPath } else { $null }
+                            $fileAclBackup = $null
+                            $parentAclBackup = $null
+
+                            try {
+                                # Backup ACLs/Owners
+                                if ($xmlPath -and (Test-Path $xmlPath)) {
+                                    $fileAclBackup = Get-Acl -Path $xmlPath -ErrorAction Stop
+                                }
+                                if ($parentDir -and (Test-Path $parentDir)) {
+                                    $parentAclBackup = Get-Acl -Path $parentDir -ErrorAction Stop
+                                }
+                                Write-GenLog "Backed up permissions for task file and parent directory: $cleanTaskName" "INFO"
+                            } catch {
+                                Write-GenLog "Failed to backup permissions before deletion: $($_.Exception.Message)" "WARN"
+                            }
+
+                            try {
+                                if ($xmlPath -and (Test-Path $xmlPath)) {
+                                    # Elevate specific target file ownership, NEVER the parent directory
+                                    takeown.exe /F "`"$xmlPath`"" /A 2>&1 | Out-Null
+                                    icacls.exe "`"$xmlPath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                                    
+                                    [System.IO.File]::Delete($xmlPath)
+                                    $success = $true
+                                    Write-Host "  [+] Task XML file physically removed." -ForegroundColor Green
+                                    Write-GenLog "Physically deleted task file: $xmlPath" "INFO"
+                                }
+                            } catch {
+                                Write-Host "  [-] Failed to physically delete task XML: $($_.Exception.Message)" -ForegroundColor Red
+                                Write-GenLog "Physical task XML deletion failed: $($_.Exception.Message)" "ERROR"
+                            } finally {
+                                # Immediately restore parent directory's owner and ACLs
+                                if ($parentDir -and $parentAclBackup -and (Test-Path $parentDir)) {
+                                    try {
+                                        Set-Acl -Path $parentDir -AclObject $parentAclBackup -ErrorAction Stop
+                                        Write-GenLog "Successfully restored parent directory owner and ACLs for $parentDir" "INFO"
+                                    } catch {
+                                        Write-Host "  [!] Warning: Failed to restore parent directory permissions." -ForegroundColor Yellow
+                                        Write-GenLog "Critical: Failed to restore parent directory permissions for $parentDir : $($_.Exception.Message)" "CRIT"
+                                    }
+                                }
+                                # Restore file ACL if file still exists (deletion failed)
+                                if ($xmlPath -and (Test-Path $xmlPath) -and $fileAclBackup) {
+                                    try {
+                                        Set-Acl -Path $xmlPath -AclObject $fileAclBackup -ErrorAction Stop
+                                    } catch {
+                                        Write-GenLog "Warning: Failed to restore task file ACL: $($_.Exception.Message)" "WARN"
+                                    }
                                 }
                             }
-                            $success = $true
-                        } catch {
-                            Write-Host "  [-] Direct Surgical Wipe Failed: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+
+                    # Wipe associated registry keys only if task is unregistered/deleted
+                    if ($success) {
+                        $regPaths = @(
+                            "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName",
+                            "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\$guid"
+                        )
+                        foreach ($rp in $regPaths) {
+                            if (Test-Path $rp) {
+                                try {
+                                    takeown.exe /F "`"$rp`"" /A 2>&1 | Out-Null
+                                    Remove-Item -Path $rp -Recurse -Force -ErrorAction SilentlyContinue
+                                } catch {}
+                            }
                         }
                     }
 
@@ -1512,7 +1610,6 @@ function Invoke-CleanupEngine {
                     }
                     
                 } else {
-              } else {
                     Write-Host "  [~] Trace: Targeting File System Payload..." -ForegroundColor DarkGray
                     
                     # بررسی پویا: اگر فایل قبلاً توسط یک مرحله دیگر پاک شده است، بیهوده خطا تولید نکن
