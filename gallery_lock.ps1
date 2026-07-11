@@ -194,6 +194,117 @@ function Get-ShannonEntropy {
 }
 
 # ==============================================================================
+# [05.1] TRUST VALIDATION & EXPANDED VENDOR DATABASE
+# ==============================================================================
+
+function Test-StrongTrust {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return $false }
+    try {
+        $sig = Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue
+        if ($sig -eq $null -or $sig.Status -ne "Valid") {
+            return $false
+        }
+
+        $cert = $sig.SignerCertificate
+        if (-not $cert) { return $false }
+
+        # 1. Certificate Chain & Revocation Validation
+        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509RevocationMode]::Online
+        $chain.ChainPolicy.RevocationFlag = [System.Security.Cryptography.X509RevocationFlag]::ExcludeRoot
+        $chain.ChainPolicy.UrlRetrievalTimeout = New-Object TimeSpan(0, 0, 5)
+
+        $chainValid = $chain.Build($cert)
+        if (-not $chainValid) {
+            $fatal = $false
+            foreach ($status in $chain.ChainStatus) {
+                if ($status.Status -band [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot -or
+                    $status.Status -band [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NotSignatureValid -or
+                    $status.Status -band [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NotTimeValid) {
+                    $fatal = $true
+                }
+            }
+            if ($fatal) { return $false }
+        }
+
+        # 2. EKU Verification
+        $hasCodeSigning = $false
+        foreach ($ext in $cert.Extensions) {
+            if ($ext.Oid.Value -eq "2.5.29.37") {
+                $ekuExt = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$ext
+                foreach ($usage in $ekuExt.EnhancedKeyUsages) {
+                    if ($usage.Value -eq "1.3.6.1.5.5.7.3.3") {
+                        $hasCodeSigning = $true
+                    }
+                }
+            }
+        }
+        if (-not $hasCodeSigning -and ($cert.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.37" })) {
+            return $false
+        }
+
+        # 3. Timestamp Validation
+        if ($sig.TimeOfSigning) {
+            if ($sig.TimeOfSigning -lt $cert.NotBefore -or $sig.TimeOfSigning -gt $cert.NotAfter) {
+                return $false
+            }
+        } else {
+            $now = Get-Date
+            if ($now -lt $cert.NotBefore -or $now -gt $cert.NotAfter) {
+                return $false
+            }
+        }
+
+        # 4. Cross Validation with System32 and WinSxS
+        $fileName = Split-Path $FilePath -Leaf
+        if ($FilePath -match "System32" -and -not ($FilePath -match "WinSxS")) {
+            $winsxsFiles = Get-ChildItem -Path "C:\Windows\WinSxS" -Filter $fileName -Recurse -File -ErrorAction SilentlyContinue
+            if ($winsxsFiles) {
+                try {
+                    $currentHash = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash
+                    $match = $false
+                    foreach ($wsFile in $winsxsFiles) {
+                        $wsHash = (Get-FileHash -Path $wsFile.FullName -Algorithm SHA256).Hash
+                        if ($wsHash -eq $currentHash) { $match = $true; break }
+                    }
+                    if (-not $match -and $cert.Subject -match "Microsoft") {
+                        Write-GenLog "Cross-validation failed for system file: $FilePath" "WARN"
+                    }
+                } catch {}
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-TrustedVendor {
+    param($Forensics)
+    if ($Forensics.SignatureStatus -ne "Valid") { return $false }
+    $signer = $Forensics.Signer
+    if (-not $signer) { return $false }
+
+    $trustedVendors = @(
+        "Microsoft Corporation", "Microsoft Windows", "Intel Corporation", "Advanced Micro Devices", "NVIDIA Corporation",
+        "Google LLC", "Google Inc", "Adobe Inc.", "Adobe Systems", "Oracle America", "Mozilla Corporation",
+        "VMware, Inc.", "Cloudflare, Inc.", "GitHub, Inc.", "Valve Corp", "Valve Corporation", "Discord Inc.",
+        "Logitech Inc.", "Logitech Europe", "Corsair Memory", "Corsair Components", "Samsung Electronics",
+        "ASUSTeK Computer", "Micro-Star International", "GIGA-BYTE TECHNOLOGY", "Realtek Semiconductor",
+        "Broadcom Inc.", "Broadcom Corporation", "Qualcomm Technologies", "Razer USA", "Razer Inc.", "Epic Games"
+    )
+    foreach ($vendor in $trustedVendors) {
+        if ($signer -like "*O=$vendor*" -or $signer -like "*CN=$vendor*" -or $signer -match $vendor) {
+            if (Test-StrongTrust -FilePath $Forensics.Path) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+# ==============================================================================
 # [06] DEEP FILE FORENSICS & CRYPTOGRAPHY ENGINE
 # ==============================================================================
 
@@ -227,12 +338,25 @@ function Get-FileForensics {
     $sigStatus = "Not Signed"
     $signer = "Unknown"
     $isMS = $false
+    $isTrusted = $false
     try {
         $sig = Get-AuthenticodeSignature -FilePath $File.FullName -ErrorAction SilentlyContinue
         if ($sig.Status -eq "Valid") {
-            $sigStatus = "Valid"
             $signer = $sig.SignerCertificate.Subject
-            if ($signer -match "Microsoft|Windows") { $isMS = $true }
+            if (Test-StrongTrust -FilePath $File.FullName) {
+                $sigStatus = "Valid"
+                if ($signer -match "Microsoft|Windows") { $isMS = $true }
+                $forensicsTemp = [PSCustomObject]@{
+                    Path = $File.FullName
+                    Signer = $signer
+                    SignatureStatus = "Valid"
+                }
+                if (Test-TrustedVendor -Forensics $forensicsTemp) {
+                    $isTrusted = $true
+                }
+            } else {
+                $sigStatus = "Untrusted Chain"
+            }
         } elseif ($sig.Status -eq "HashMismatch") {
             $sigStatus = "Invalid (Modified)"
         }
@@ -260,6 +384,7 @@ function Get-FileForensics {
         SignatureStatus = $sigStatus
         IsMicrosoft = $isMS
         IsCriticalPath = $isCritical
+        IsTrustedVendor = $isTrusted
     }
 }
 
@@ -267,26 +392,40 @@ function Get-FileForensics {
 # [07] THREAT HEURISTICS & SCORING ENGINE
 # ==============================================================================
 
+function Get-PECompileTime {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath) -or (Get-Item $FilePath).Length -lt 1024) { return $null }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+        if ($bytes.Length -lt 64) { return $null }
+        if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null }
+        $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+        if ($peOffset -le 0 -or $peOffset -gt ($bytes.Length - 24)) { return $null }
+        if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset+1] -ne 0x45) { return $null }
+        $timestampSeconds = [BitConverter]::ToInt32($bytes, $peOffset + 8)
+        $epoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc
+        $compileTime = $epoch.AddSeconds($timestampSeconds)
+        return $compileTime
+    } catch {
+        return $null
+    }
+}
+
 function Get-ThreatScore {
     <#
     .SYNOPSIS
-        Evaluates a file's forensic profile against Gallery/Grenam known behaviors.
-        Employs dynamic, cryptographically secure signature verification to completely eliminate false positives.
-    .PARAMETER Forensics
-        The forensic object returned by Get-FileForensics containing file metadata and signature status.
+        Evaluates a file's forensic profile against Gallery/Grenam known behaviors using a multi-layered Risk Engine.
     #>
-    param($Forensics)
+    param(
+        $Forensics,
+        $Context = $null
+    )
     
-    # ==========================================================================
-    # CRITICAL SECURITY RULE: DYNAMIC AUTHENTICODE TRUST
-    # ==========================================================================
-    # Standard file infectors (like Gallery.exe/Grenam) are cryptographically incapable 
-    # of forging valid digital signatures. If a file has a mathematically valid, 
-    # untampered digital signature verified by Windows, it is automatically and 
-    # unconditionally trusted, regardless of the vendor (e.g., ESET, Microsoft, EaseUS, Adobe).
-    if ($Forensics.SignatureStatus -eq "Valid") {
+    # Standard valid digital signature check by trusted vendors
+    if ($Forensics.SignatureStatus -eq "Valid" -and $Forensics.IsTrustedVendor) {
         return [PSCustomObject]@{
             Score              = 0
+            Confidence         = 100
             Status             = "SAFE"
             Reasons            = "Safelisted: Verified Valid Digital Signature ($($Forensics.Signer))"
             IsGClone           = $false
@@ -297,100 +436,162 @@ function Get-ThreatScore {
 
     $score = 0
     $reasons = [System.Collections.Generic.List[string]]::new()
+    $indicatorsCount = 0
     
     $isGClone = $false
     $hiddenOriginalPath = $null
     $hasMatchingIco = $false
 
-    # RULE 1: Literal Gallery.exe matching (Unsigned/Modified only)
-    if ($Forensics.Name -match "(?i)^Gallery\.exe$") {
-        $score += 100
-        $reasons.Add("Known Primary Malware Payload Name")
-    }
-
-    # RULE 2: G-Prefix Clone Behavior
-    if ($Forensics.Name -match "^g(.+\.exe)$" -and $Forensics.Name -notmatch "(?i)^gallery\.exe$") {
-        $score += 30
-        $reasons.Add("G-Prefix Naming Convention Detected")
-        
-        $originalName = $matches[1]
-        $potentialOriginal = Join-Path $Forensics.Directory $originalName
-        
-        if (Test-Path $potentialOriginal) {
-            $origInfo = Get-Item $potentialOriginal -Force
-            
-            # Sub-rule: Is the original hidden?
-            if ($origInfo.Attributes -match "Hidden") {
-                $score += 40
-                $reasons.Add("Original Executable Hidden in Same Directory")
-                $isGClone = $true
-                $hiddenOriginalPath = $potentialOriginal
-            }
-            
-            # Sub-rule: Size Anomaly (Virus is usually much smaller than the app it replaces)
-            if ($Forensics.Size -lt 2MB -and $origInfo.Length -gt ($Forensics.Size * 2)) {
-                $score += 20
-                $reasons.Add("File Size Abnormally Small Compared to Hidden Original")
-            }
-        }
-        
-        # Sub-rule: Malicious ICO generation
-        $icoName = $Forensics.Name.Replace(".exe", ".ico")
-        $icoPath = Join-Path $Forensics.Directory $icoName
-        if (Test-Path $icoPath) {
-            $score += 15
-            $reasons.Add("Matching G-Prefixed Fake .ICO File Found")
-            $hasMatchingIco = $true
-        }
-    }
-
-    # RULE 3: Cryptographic Anomalies (Only triggers for unsigned or modified binaries)
-    if ($Forensics.SignatureStatus -eq "Not Signed" -or $Forensics.SignatureStatus -eq "Invalid (Modified)") {
-        $score += 10
-        $reasons.Add("Unsigned or Invalid Authenticode")
-    }
-    
-    if ($Forensics.Entropy -gt 7.2) {
-        $score += 20
-        $reasons.Add("High Entropy ($($Forensics.Entropy)) - Likely Packed/Encrypted")
-    }
-
-    # RULE 4: Attribute Tampering
-    if ($Forensics.Attributes -match "Hidden" -and $Forensics.Attributes -match "System") {
-        if ($Forensics.Name -match "^g" -or $Forensics.Name -match "(?i)gallery") {
-            $score += 20
-            $reasons.Add("Super-Hidden (System+Hidden) Attributes Applied")
-        }
-    }
-
-    # RULE 5: Suspicious Locations
-    $lowersPath = $Forensics.Path.ToLower()
-    if ($lowersPath -match "\\appdata\\roaming\\" -or $lowersPath -match "\\appdata\\local\\") {
+    # 1. Signer / Certificate Validation
+    if ($Forensics.SignatureStatus -eq "Invalid (Modified)") {
+        $score += 70
+        $reasons.Add("Tampered Signature / Hash Mismatch")
+        $indicatorsCount++
+    } elseif ($Forensics.SignatureStatus -eq "Untrusted Chain") {
+        $score += 40
+        $reasons.Add("Untrusted Certificate Chain")
+        $indicatorsCount++
+    } elseif ($Forensics.SignatureStatus -eq "Not Signed") {
         $score += 15
+        $reasons.Add("Unsigned Binary")
+        $indicatorsCount++
+    }
+
+    # 2. Path & Execution Vector Check
+    $lowersPath = $Forensics.Path.ToLower()
+    $suspiciousPath = $false
+    if ($lowersPath -match "\\appdata\\roaming\\" -or $lowersPath -match "\\appdata\\local\\") {
+        $score += 20
         $reasons.Add("Execution from User AppData")
+        $suspiciousPath = $true
     }
     if ($lowersPath -match "\\start menu\\programs\\startup\\") {
         $score += 30
-        $reasons.Add("Persistence via Startup Folder")
+        $reasons.Add("Persistence Startup Folder")
+        $suspiciousPath = $true
     }
     if ($lowersPath -match "\\temp\\") {
         $score += 20
         $reasons.Add("Execution from Temp Directory")
+        $suspiciousPath = $true
     }
     if ($lowersPath -match "config\\systemprofile\\appdata") {
-        $score += 40
-        $reasons.Add("Execution from SYSTEM Profile AppData (Privilege Escalation)")
+        $score += 35
+        $reasons.Add("Execution from SYSTEM Profile AppData")
+        $suspiciousPath = $true
+    }
+    if ($suspiciousPath) { $indicatorsCount++ }
+
+    # 3. Known Malware Signatures and Naming Conventions
+    $namingMatch = $false
+    if ($Forensics.Name -match "(?i)^Gallery\.exe$") {
+        $score += 80
+        $reasons.Add("Known primary malware payload filename matching")
+        $namingMatch = $true
+    }
+    if ($Forensics.Name -match "^g(.+\.exe)$" -and $Forensics.Name -notmatch "(?i)^gallery\.exe$") {
+        $score += 30
+        $reasons.Add("G-Prefix Naming Convention Pattern")
+        $namingMatch = $true
+        
+        $originalName = $matches[1]
+        $potentialOriginal = Join-Path $Forensics.Directory $originalName
+        if (Test-Path $potentialOriginal) {
+            $origInfo = Get-Item $potentialOriginal -Force
+            if ($origInfo.Attributes -match "Hidden") {
+                $score += 30
+                $reasons.Add("Hidden original binary in matching path")
+                $isGClone = $true
+                $hiddenOriginalPath = $potentialOriginal
+            }
+        }
+        
+        $icoName = $Forensics.Name.Replace(".exe", ".ico")
+        $icoPath = Join-Path $Forensics.Directory $icoName
+        if (Test-Path $icoPath) {
+            $score += 15
+            $reasons.Add("Matching G-Prefixed Fake ICO Icon File")
+            $hasMatchingIco = $true
+        }
+    }
+    if ($namingMatch) { $indicatorsCount++ }
+
+    # 4. Entropy Check
+    if ($Forensics.Entropy -gt 7.2) {
+        $score += 20
+        $reasons.Add("High Shannon Entropy ($($Forensics.Entropy)): Packed/Encrypted")
+        $indicatorsCount++
+    } elseif ($Forensics.Entropy -gt 6.8) {
+        $score += 10
+        $reasons.Add("Medium-High Shannon Entropy ($($Forensics.Entropy))")
+        $indicatorsCount++
     }
 
-    # Calculate Final
+    # 5. PE Compile Time Check
+    $compTime = Get-PECompileTime -FilePath $Forensics.Path
+    if ($compTime) {
+        $now = Get-Date
+        if ($compTime -gt $now) {
+            $score += 40
+            $reasons.Add("Spoofed PE Compile Time (Future timestamp)")
+            $indicatorsCount++
+        } elseif (($now - $compTime).TotalDays -lt 30) {
+            $score += 15
+            $reasons.Add("Extremely recent PE Compile Time (Created within 30 days)")
+            $indicatorsCount++
+        }
+    }
+
+    # 6. LOLBIN Abuse Check
+    $lolbins = @("certutil.exe", "powershell.exe", "cmd.exe", "mshta.exe", "regsvr32.exe", "schtasks.exe", "wscript.exe", "cscript.exe", "bitsadmin.exe")
+    if ($lolbins -contains $Forensics.Name.ToLower() -and $suspiciousPath) {
+        $score += 50
+        $reasons.Add("LOLBIN running from user-writable/unusual path")
+        $indicatorsCount++
+    }
+
+    # 7. Context Indicators (Parent Process & Network Connection & Persistence)
+    if ($Context) {
+        if ($Context.ParentProcess -match "cmd|powershell|gallery") {
+            $score += 25
+            $reasons.Add("Suspicious process ancestry / parent relationship")
+            $indicatorsCount++
+        }
+        if ($Context.ActiveNetwork) {
+            $score += 20
+            $reasons.Add("Active network socket connections")
+            $indicatorsCount++
+        }
+        if ($Context.IsPersistent) {
+            $score += 25
+            $reasons.Add("Active registry run or task persistence")
+            $indicatorsCount++
+        }
+    }
+
+    # Real-time multi-indicator risk normalization
     $finalScore = [math]::Min($score, 100)
     
+    # Safe Status classification: Prefer UNKNOWN over false alerts
     $status = "SAFE"
-    if ($finalScore -ge 30 -and $finalScore -le 65) { $status = "SUSPICIOUS" }
-    elseif ($finalScore -gt 65) { $status = "MALWARE" }
+    $confidence = [math]::Min(100, ($indicatorsCount * 25))
+
+    # Must require multiple independent indicators to mark malicious or suspicious
+    if ($indicatorsCount -ge 3 -and $finalScore -gt 65) {
+        $status = "MALWARE"
+    } elseif ($indicatorsCount -eq 2 -and $finalScore -ge 30) {
+        $status = "SUSPICIOUS"
+    } else {
+        if ($finalScore -gt 0) {
+            $status = "UNKNOWN"
+        } else {
+            $status = "SAFE"
+        }
+    }
 
     return [PSCustomObject]@{
         Score              = $finalScore
+        Confidence         = $confidence
         Status             = $status
         Reasons            = ($reasons -join " | ")
         IsGClone           = $isGClone
@@ -403,10 +604,46 @@ function Get-ThreatScore {
 # [08] LIVE PROCESS & MEMORY HUNTING ENGINE
 # ==============================================================================
 
+function Test-SafeToStopProcess {
+    param([int]$ProcessId)
+    try {
+        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if (-not $proc) { return $false }
+
+        # 1. Critical core Windows processes check
+        $criticalNames = @("system", "idle", "csrss", "lsass", "smss", "services", "wininit", "winlogon", "svchost", "spoolsv", "explorer")
+        if ($criticalNames -contains $proc.ProcessName.ToLower()) {
+            return $false
+        }
+
+        # 2. Executable path inside System32/SysWOW64 and signed by MS
+        $path = ""
+        try { $path = $proc.Path } catch {}
+        if ($path) {
+            if ($path -match "C:\\Windows\\System32" -or $path -match "C:\\Windows\\SysWOW64") {
+                $sig = Get-AuthenticodeSignature -FilePath $path -ErrorAction SilentlyContinue
+                if ($sig.Status -eq "Valid" -and $sig.SignerCertificate.Subject -match "Microsoft") {
+                    return $false
+                }
+            }
+        }
+
+        # 3. Session 0 & Service Relationship Check
+        if ($proc.SessionId -eq 0) {
+            $service = Get-CimInstance Win32_Service -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+            if ($service) { return $false }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-MemoryHunt {
     <#
     .SYNOPSIS
         Scans active RAM for Gallery.exe processes or processes running from suspicious paths.
+        This scan is read-only and registers findings for Option 4 Cleanup.
     #>
     Show-GenHeader
     Write-Host "  [🧠] INITIATING LIVE PROCESS MEMORY HUNT..." -ForegroundColor Magenta
@@ -424,7 +661,6 @@ function Invoke-MemoryHunt {
             $isThreat = $true
             $reason = "Known Gallery.exe Process"
         } elseif ($proc.Name -match "^g.*\.exe$") {
-            # Could be a spawned g-clone
             $isThreat = $true
             $reason = "Suspected G-Clone Execution"
         } elseif ($proc.ExecutablePath -match "Temp\\.*\.exe" -or $proc.ExecutablePath -match "AppData\\.*Gallery") {
@@ -442,6 +678,26 @@ function Invoke-MemoryHunt {
                 Reason = $reason
             })
             
+            # Register finding in ThreatDatabase for Option 4
+            $Global:ThreatDatabase.Add([PSCustomObject]@{
+                Forensics = [PSCustomObject]@{
+                    Path = "Process: $($proc.Name) (PID: $($proc.ProcessId))"
+                    Name = $proc.Name
+                    Size = 0
+                    IsCriticalPath = $false
+                    Signer = "Unknown"
+                    SignatureStatus = "N/A"
+                    SHA256 = "N/A"
+                    ProcessId = $proc.ProcessId
+                }
+                Risk = [PSCustomObject]@{
+                    Status = "MALWARE"
+                    Score = 95
+                    Reasons = $reason
+                    IsGClone = $false
+                }
+            })
+
             Write-Host "  [!] ACTIVE THREAT DETECTED IN MEMORY" -ForegroundColor Red
             Write-Host "      PID  : $($proc.ProcessId)" -ForegroundColor Gray
             Write-Host "      NAME : $($proc.Name)" -ForegroundColor Gray
@@ -453,20 +709,7 @@ function Invoke-MemoryHunt {
     if ($threatsInMem -eq 0) {
         Write-Host "  [+] Memory Scan Complete. No active Gallery/Grenam processes found." -ForegroundColor Green
     } else {
-        Write-Host "  [!] WARNING: $threatsInMem malicious processes are actively running." -ForegroundColor Red
-        $action = Read-Host "  [?] Do you want to TERMINATE these processes immediately? (Y/N)"
-        if ($action -match "^[Yy]") {
-            foreach ($tp in $Global:ProcessDatabase) {
-                try {
-                    Stop-Process -Id $tp.ProcessID -Force -ErrorAction Stop
-                    Write-Host "      [-] Terminated PID $($tp.ProcessID) ($($tp.Name))" -ForegroundColor Green
-                    Write-GenLog "Force terminated malicious process: $($tp.Name) (PID: $($tp.ProcessID))" "WARN"
-                } catch {
-                    Write-Host "      [x] Failed to terminate PID $($tp.ProcessID): $($_.Exception.Message)" -ForegroundColor Red
-                    Write-GenLog "Failed to terminate malicious process: $($tp.Name) (PID: $($tp.ProcessID))" "ERROR"
-                }
-            }
-        }
+        Write-Host "  [✓] Memory Scan Complete. Registered $threatsInMem process threats for cleanup." -ForegroundColor Yellow
     }
     Invoke-GenPause
 }
@@ -484,7 +727,19 @@ function Scan-RegistryPersistence {
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
         "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
-        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs",
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ShellServiceObjectDelayLoad",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnceEx",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa",
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors"
     )
 
     foreach ($reg in $regPaths) {
@@ -518,7 +773,7 @@ function Scan-RegistryPersistence {
                         $forensics = Get-FileForensics -File $fileInfo
                         
                         # If the file has a valid corporate digital signature, bypass and safelist it!
-                        if ($forensics.SignatureStatus -eq "Valid" -and $forensics.Signer -match "ESET|Microsoft|Google|Mozilla|Intel|NVIDIA|AMD") {
+                        if ($forensics.SignatureStatus -eq "Valid" -and $forensics.IsTrustedVendor) {
                             Write-GenLog "Safelisted persistence target during registry scan: $exePath (Signed by: $($forensics.Signer))" "INFO"
                             continue
                         }
@@ -553,6 +808,193 @@ function Scan-RegistryPersistence {
         }
     }
     return $threatsFound
+}
+
+function Scan-COMHijacking {
+    Write-Host "  [+] Scanning for COM Hijacking Anomalies (HKLM/HKCU/WOW6432Node)..." -ForegroundColor Cyan
+    $threatsFound = 0
+    $clsidPaths = @(
+        "HKCU:\Software\Classes\CLSID",
+        "HKLM:\Software\Classes\CLSID",
+        "HKCU:\Software\Classes\WOW6432Node\CLSID",
+        "HKLM:\Software\Classes\WOW6432Node\CLSID"
+    )
+    foreach ($basePath in $clsidPaths) {
+        if (Test-Path $basePath) {
+            try {
+                $clsids = Get-ChildItem -Path $basePath -ErrorAction SilentlyContinue
+                foreach ($clsidKey in $clsids) {
+                    $subKeys = @("InprocServer32", "InprocHandler32", "LocalServer32", "TreatAs", "ProgID", "TypeLib", "AutoTreat", "Elevation")
+                    foreach ($sub in $subKeys) {
+                        $subPath = Join-Path $clsidKey.PSPath $sub
+                        if (Test-Path $subPath) {
+                            $val = Get-ItemPropertyValue -Path $subPath -Name "(default)" -ErrorAction SilentlyContinue
+                            if ($val -and $val -is [string]) {
+                                $expanded = [System.Environment]::ExpandEnvironmentVariables($val).Trim('"').Trim()
+                                if ($expanded -match "AppData|\\Temp\\|Users\\Public" -and -not ($expanded -match "system32|syswow64")) {
+                                    $threatsFound++
+                                    $Global:ThreatDatabase.Add([PSCustomObject]@{
+                                        Forensics = [PSCustomObject]@{
+                                            Path = "Registry COM: $subPath"
+                                            Name = "$($clsidKey.PSChildName)\$sub"
+                                            Size = 0
+                                            IsCriticalPath = $true
+                                            Signer = "N/A"
+                                            SignatureStatus = "N/A"
+                                            SHA256 = "N/A"
+                                        }
+                                        Risk = [PSCustomObject]@{
+                                            Status = "MALWARE"
+                                            Score = 90
+                                            Reasons = "COM Hijack: $sub pointing to writable path ($expanded)"
+                                            IsGClone = $false
+                                        }
+                                    })
+                                    Write-GenLog "COM Hijacking detected at CLSID $($clsidKey.PSChildName) : $sub -> $expanded" "WARN"
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    return $threatsFound
+}
+
+function Invoke-MemoryInspection {
+    Write-Host "  [+] Initiating Process Memory & Hooking Audit..." -ForegroundColor Cyan
+    $memThreats = 0
+    try {
+        $procs = Get-Process -ErrorAction SilentlyContinue
+        foreach ($p in $procs) {
+            try {
+                foreach ($mod in $p.Modules) {
+                    $modPath = $mod.FileName
+                    if ($modPath -match "Temp" -or $modPath -match "AppData\\Local\\Temp" -or $modPath -match "Users\\Public") {
+                        $memThreats++
+                        $Global:ThreatDatabase.Add([PSCustomObject]@{
+                            Forensics = [PSCustomObject]@{
+                                Path = "Process Module: $($p.Name) -> $modPath"
+                                Name = $p.Name
+                                Size = 0
+                                IsCriticalPath = $false
+                                Signer = "Unknown"
+                                SignatureStatus = "N/A"
+                                SHA256 = "N/A"
+                            }
+                            Risk = [PSCustomObject]@{
+                                Status = "SUSPICIOUS"
+                                Score = 75
+                                Reasons = "Memory Injection/Reflective Loading: Process loaded library from Temp/AppData ($modPath)"
+                                IsGClone = $false
+                            }
+                        })
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+    return $memThreats
+}
+
+function Invoke-KernelInspection {
+    Write-Host "  [+] Initiating Driver & Kernel Minifilter Sweep..." -ForegroundColor Cyan
+    $kernelThreats = 0
+    try {
+        $drivers = Get-CimInstance Win32_SystemDriver | Where-Object { $_.State -eq "Running" }
+        foreach ($drv in $drivers) {
+            $path = $drv.PathName
+            if ($path -and (Test-Path $path)) {
+                $sig = Get-AuthenticodeSignature -FilePath $path -ErrorAction SilentlyContinue
+                if ($sig.Status -ne "Valid") {
+                    $kernelThreats++
+                    $Global:ThreatDatabase.Add([PSCustomObject]@{
+                        Forensics = [PSCustomObject]@{
+                            Path = "Kernel Driver: $($drv.Name) ($path)"
+                            Name = $drv.Name
+                            Size = (Get-Item $path).Length
+                            IsCriticalPath = $true
+                            Signer = "Unsigned"
+                            SignatureStatus = "N/A"
+                            SHA256 = "N/A"
+                        }
+                        Risk = [PSCustomObject]@{
+                            Status = "SUSPICIOUS"
+                            Score = 70
+                            Reasons = "Unsigned driver running in kernel memory: $($drv.DisplayName)"
+                            IsGClone = $false
+                        }
+                    })
+                    Write-GenLog "Unsigned kernel driver running: $($drv.Name) at $path" "WARN"
+                }
+            }
+        }
+    } catch {}
+    return $kernelThreats
+}
+
+function Invoke-NetworkInspection {
+    Write-Host "  [+] Initiating Network Integrity & BITS Job Audit..." -ForegroundColor Cyan
+    $networkThreats = 0
+
+    # 1. Hosts File check
+    $hostsPath = "C:\Windows\System32\drivers\etc\hosts"
+    if (Test-Path $hostsPath) {
+        try {
+            $lines = Get-Content $hostsPath -ErrorAction SilentlyContinue
+            foreach ($line in $lines) {
+                if ($line -match "^\s*[^#]" -and $line -match "microsoft|windows|update|defender|virus|security") {
+                    $networkThreats++
+                    $Global:ThreatDatabase.Add([PSCustomObject]@{
+                        Forensics = [PSCustomObject]@{
+                            Path = "Hosts File redirection: $line"
+                            Name = "hosts"
+                            Size = 0
+                            IsCriticalPath = $true
+                            Signer = "N/A"
+                            SignatureStatus = "N/A"
+                            SHA256 = "N/A"
+                        }
+                        Risk = [PSCustomObject]@{
+                            Status = "MALWARE"
+                            Score = 85
+                            Reasons = "Suspicious host redirection in Hosts file: $line"
+                            IsGClone = $false
+                        }
+                    })
+                }
+            }
+        } catch {}
+    }
+
+    # 2. BITS Transfer check
+    try {
+        $bitsJobs = Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue
+        foreach ($job in $bitsJobs) {
+            if ($job.RemoteUrl -match "gallery" -or $job.RemoteUrl -match "\.exe|\.ps1|\.vbs|\.bat") {
+                $networkThreats++
+                $Global:ThreatDatabase.Add([PSCustomObject]@{
+                    Forensics = [PSCustomObject]@{
+                        Path = "BITS Job: $($job.DisplayName) -> $($job.RemoteUrl)"
+                        Name = $job.DisplayName
+                        Size = 0
+                        IsCriticalPath = $false
+                        Signer = "N/A"
+                        SignatureStatus = "N/A"
+                        SHA256 = "N/A"
+                    }
+                    Risk = [PSCustomObject]@{
+                        Status = "MALWARE"
+                        Score = 90
+                        Reasons = "Suspicious persistent BITS job: $($job.RemoteUrl)"
+                        IsGClone = $false
+                    }
+                })
+            }
+        }
+    } catch {}
+    return $networkThreats
 }
 
 
@@ -1081,6 +1523,10 @@ function Invoke-DeepSystemScan {
 Write-Host "`n"
     $threatsFound += Scan-RegistryPersistence
     $threatsFound += Scan-ScheduledTasks
+    $threatsFound += Scan-COMHijacking
+    $threatsFound += Invoke-MemoryInspection
+    $threatsFound += Invoke-KernelInspection
+    $threatsFound += Invoke-NetworkInspection
 
     # ==========================================================================
     # UPGRADED THREAT DETECTION DISPLAY (REAL-TIME TELEMETRY LIST)
@@ -1157,15 +1603,64 @@ if ($threatsFound -gt 0) {
 # [11] QUARANTINE & AES ENCRYPTION ENGINE
 # ==============================================================================
 
+function Encrypt-FileAES {
+    param(
+        [string]$InFile,
+        [string]$OutFile,
+        [string]$Password
+    )
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($InFile)
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $salt = [byte[]](1, 2, 3, 4, 5, 6, 7, 8)
+        $deriver = New-Object System.Security.Cryptography.Rfc2898DeriveBytes $Password, $salt, 1000
+        $aes.Key = $deriver.GetBytes(32)
+        $aes.IV = $deriver.GetBytes(16)
+
+        $encryptor = $aes.CreateEncryptor()
+        $encBytes = $encryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
+        [System.IO.File]::WriteAllBytes($OutFile, $encBytes)
+        $aes.Dispose()
+        return $true
+    } catch {
+        Write-GenLog "AES Encryption failed: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Decrypt-FileAES {
+    param(
+        [string]$InFile,
+        [string]$OutFile,
+        [string]$Password
+    )
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($InFile)
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $salt = [byte[]](1, 2, 3, 4, 5, 6, 7, 8)
+        $deriver = New-Object System.Security.Cryptography.Rfc2898DeriveBytes $Password, $salt, 1000
+        $aes.Key = $deriver.GetBytes(32)
+        $aes.IV = $deriver.GetBytes(16)
+
+        $decryptor = $aes.CreateDecryptor()
+        $decBytes = $decryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
+        [System.IO.File]::WriteAllBytes($OutFile, $decBytes)
+        $aes.Dispose()
+        return $true
+    } catch {
+        Write-GenLog "AES Decryption failed: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
 function Invoke-SecureQuarantine {
     <#
     .SYNOPSIS
-        Moves a malicious file to the vault and renames it to break execution.
-        (In a full .NET compiled app this would use AES, here we use structural breaking).
+        Encrypts a file with AES-256 and moves it to the vault, preserving full metadata and ACLs.
     #>
     param([string]$ThreatPath)
     
-    if ($ThreatPath -match "^Registry:|Task:") { return $true } # Logical bypass for non-files
+    if ($ThreatPath -match "^Registry:|Task:|Process Module:|Kernel Driver:") { return $true }
     if (-not (Test-Path $ThreatPath)) { return $false }
     
     try {
@@ -1173,22 +1668,51 @@ function Invoke-SecureQuarantine {
         $hashName = (New-Guid).Guid
         $destPath = Join-Path $Global:QuarantineDir "$hashName.vir"
         
-        # Take Ownership and strip attributes before moving
-        takeown.exe /F "`"$ThreatPath`"" /A 2>&1 | Out-Null
-        icacls.exe "`"$ThreatPath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+        # Extract metadata before moving
         $item = Get-Item $ThreatPath -Force
+        $sha256 = (Get-FileForensics -File $item).SHA256
+        $creation = $item.CreationTime.ToString("o")
+        $lastWrite = $item.LastWriteTime.ToString("o")
+        $lastAccess = $item.LastAccessTime.ToString("o")
+
+        $owner = "SYSTEM"
+        $sddl = ""
+        try {
+            $acl = Get-Acl -Path $ThreatPath
+            $owner = $acl.Owner
+            $sddl = $acl.GetSecurityDescriptorSddlForm('All')
+        } catch {}
+
+        # Strip attributes to normal
         $item.Attributes = 'Normal'
 
-        Move-Item -Path $ThreatPath -Destination $destPath -Force
-        
-        $metadata = @{
-            OriginalPath = $ThreatPath
-            QuarantinedAt = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            OriginalName = $fileName
-            VaultID = $hashName
+        # Encrypt the file using AES
+        $encrypted = Encrypt-FileAES -InFile $ThreatPath -OutFile $destPath -Password $Global:QuarantineKey
+        if (-not $encrypted) {
+            Write-GenLog "Encryption failed for $ThreatPath during quarantine." "ERROR"
+            return $false
         }
-        $metadata | ConvertTo-Json | Out-File (Join-Path $Global:QuarantineDir "$hashName.json")
-        Write-GenLog "Quarantined $ThreatPath to VaultID $hashName" "INFO"
+
+        # Delete original file safely
+        Remove-Item -Path $ThreatPath -Force
+        
+        # Save Metadata manifest
+        $metadata = @{
+            OriginalPath   = $ThreatPath
+            OriginalName   = $fileName
+            VaultID        = $hashName
+            QuarantinedAt  = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            SHA256         = $sha256
+            CreationTime   = $creation
+            LastWriteTime  = $lastWrite
+            LastAccessTime = $lastAccess
+            Owner          = $owner
+            SDDL           = $sddl
+            RestoreToken   = [Guid]::NewGuid().Guid
+        }
+
+        $metadata | ConvertTo-Json | Out-File (Join-Path $Global:QuarantineDir "$hashName.json") -Force
+        Write-GenLog "Quarantined $ThreatPath to AES vault ID $hashName" "INFO"
         return $true
     } catch {
         Write-GenLog "Quarantine failed for $ThreatPath : $($_.Exception.Message)" "ERROR"
@@ -1460,49 +1984,20 @@ function Invoke-CleanupEngine {
 
                     $success = $false
                     
-                   # Tier 1: COM Object Deletion (Safest, no file or permission tampering)
-                    Write-Host "  [~] Tier 1: Attempting Task Deletion via Native COM API..." -ForegroundColor DarkGray
-                    Write-GenLog "Attempting Native COM API deletion for task: $cleanTaskName" "INFO"
+                    # Tier 1: PowerShell Native Cmdlet (Unregister-ScheduledTask)
+                    Write-Host "  [~] Tier 1: Attempting Native PowerShell Command (Unregister-ScheduledTask)..." -ForegroundColor DarkGray
                     try {
-                        $service = New-Object -ComObject Schedule.Service
-                        $service.Connect()
-                        $taskFolder = "\"
-                        $taskNameOnly = $cleanTaskName
-                        if ($cleanTaskName -match "\\") {
-                            $lastBackslash = $cleanTaskName.LastIndexOf("\")
-                            if ($lastBackslash -gt 0) {
-                                $taskFolder = $cleanTaskName.Substring(0, $lastBackslash)
-                                $taskNameOnly = $cleanTaskName.Substring($lastBackslash + 1)
-                            } else {
-                                $taskNameOnly = $cleanTaskName.Replace("\", "")
-                            }
-                        }
-                        $folder = $service.GetFolder($taskFolder)
-                        $folder.DeleteTask($taskNameOnly, 0)
+                        Unregister-ScheduledTask -TaskName $cleanTaskName -Confirm:$false -ErrorAction Stop
                         $success = $true
-                        Write-Host "  [+] Task deleted successfully via COM API." -ForegroundColor Green
-                        Write-GenLog "Successfully deleted scheduled task via COM API: $cleanTaskName" "INFO"
+                        Write-Host "  [+] Task deleted successfully via Cmdlet." -ForegroundColor Green
+                        Write-GenLog "Successfully unregistered scheduled task via Cmdlet: $cleanTaskName" "INFO"
                     } catch {
-                        Write-Host "  [!] COM API deletion failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                        Write-GenLog "COM API deletion failed for task $cleanTaskName : $($_.Exception.Message)" "WARN"
+                        Write-Host "  [!] Native PowerShell Command Failed: $($_.Exception.Message)" -ForegroundColor Yellow
                     }
 
-                    # Tier 2: PowerShell Native Cmdlet Fallback
+                    # Tier 2: Command Line Utility Fallback (schtasks.exe)
                     if (-not $success) {
-                        Write-Host "  [~] Tier 2: Attempting Native PowerShell Command (Unregister-ScheduledTask)..." -ForegroundColor DarkGray
-                        try {
-                            Unregister-ScheduledTask -TaskName $cleanTaskName -Confirm:$false -ErrorAction Stop
-                            $success = $true
-                            Write-Host "  [+] Task deleted successfully via Cmdlet." -ForegroundColor Green
-                            Write-GenLog "Successfully unregistered scheduled task via Cmdlet: $cleanTaskName" "INFO"
-                        } catch {
-                            Write-Host "  [!] Native PowerShell Command Failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                        }
-                    }
-
-                    # Tier 3: Command Line Utility Fallback (schtasks.exe)
-                    if (-not $success) {
-                        Write-Host "  [~] Tier 3: Attempting Standard CLI Task Deletion (schtasks.exe)..." -ForegroundColor DarkGray
+                        Write-Host "  [~] Tier 2: Attempting Standard CLI Task Deletion (schtasks.exe)..." -ForegroundColor DarkGray
                         try {
                             $schProc = Start-Process -FilePath "schtasks.exe" -ArgumentList "/Delete /TN `"$cleanTaskName`" /F" -Wait -NoNewWindow -PassThru -ErrorAction Stop
                             if ($schProc.ExitCode -eq 0) {
@@ -1515,78 +2010,9 @@ function Invoke-CleanupEngine {
                         }
                     }
 
-                    # Tier 4: Surgical File Deletion Fallback (Surgical ACL Backup & Restore)
-                    if (-not $success) {
-                        # Rule 3 Safeguard: Protected System Tasks Check
-                        $isProtectedSystemTask = $cleanTaskName -match "^(?i)Microsoft\\Windows"
-                        $isVerifiedMaliciousFile = $false
-                        if ($threat.Forensics -and $threat.Forensics.Path -and (Test-Path $threat.Forensics.Path)) {
-                            if ($threat.Forensics.SignatureStatus -ne "Valid" -or -not $threat.Forensics.IsMicrosoft) {
-                                $isVerifiedMaliciousFile = $true
-                            }
-                        }
-
-                        if ($isProtectedSystemTask -and -not $isVerifiedMaliciousFile) {
-                            Write-Host "  [!] Direct filesystem deletion blocked: Protected Windows Task ($cleanTaskName) is unmodified." -ForegroundColor Yellow
-                            Write-GenLog "Direct filesystem/ownership modification blocked for unmodified system task: $cleanTaskName" "WARN"
-                        } else {
-                            Write-Host "  [~] Tier 4: Engaging Surgical Direct File Deletion..." -ForegroundColor Red
-                            $parentDir = if ($xmlPath) { Split-Path $xmlPath } else { $null }
-                            $fileAclBackup = $null
-                            $parentAclBackup = $null
-
-                            try {
-                                # Backup ACLs/Owners
-                                if ($xmlPath -and (Test-Path $xmlPath)) {
-                                    $fileAclBackup = Get-Acl -Path $xmlPath -ErrorAction Stop
-                                }
-                                if ($parentDir -and (Test-Path $parentDir)) {
-                                    $parentAclBackup = Get-Acl -Path $parentDir -ErrorAction Stop
-                                }
-                                Write-GenLog "Backed up permissions for task file and parent directory: $cleanTaskName" "INFO"
-                            } catch {
-                                Write-GenLog "Failed to backup permissions before deletion: $($_.Exception.Message)" "WARN"
-                            }
-
-                            try {
-                                if ($xmlPath -and (Test-Path $xmlPath)) {
-                                    # Elevate specific target file ownership, NEVER the parent directory
-                                    takeown.exe /F "`"$xmlPath`"" /A 2>&1 | Out-Null
-                                    icacls.exe "`"$xmlPath`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
-                                    
-                                    [System.IO.File]::Delete($xmlPath)
-                                    $success = $true
-                                    Write-Host "  [+] Task XML file physically removed." -ForegroundColor Green
-                                    Write-GenLog "Physically deleted task file: $xmlPath" "INFO"
-                                }
-                            } catch {
-                                Write-Host "  [-] Failed to physically delete task XML: $($_.Exception.Message)" -ForegroundColor Red
-                                Write-GenLog "Physical task XML deletion failed: $($_.Exception.Message)" "ERROR"
-                            } finally {
-                                # Immediately restore parent directory's owner and ACLs
-                                if ($parentDir -and $parentAclBackup -and (Test-Path $parentDir)) {
-                                    try {
-                                        Set-Acl -Path $parentDir -AclObject $parentAclBackup -ErrorAction Stop
-                                        Write-GenLog "Successfully restored parent directory owner and ACLs for $parentDir" "INFO"
-                                    } catch {
-                                        Write-Host "  [!] Warning: Failed to restore parent directory permissions." -ForegroundColor Yellow
-                                        Write-GenLog "Critical: Failed to restore parent directory permissions for $parentDir : $($_.Exception.Message)" "CRIT"
-                                    }
-                                }
-                                # Restore file ACL if file still exists (deletion failed)
-                                if ($xmlPath -and (Test-Path $xmlPath) -and $fileAclBackup) {
-                                    try {
-                                        Set-Acl -Path $xmlPath -AclObject $fileAclBackup -ErrorAction Stop
-                                    } catch {
-                                        Write-GenLog "Warning: Failed to restore task file ACL: $($_.Exception.Message)" "WARN"
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    # Wipe associated registry keys only if task is unregistered/deleted
-                    if ($success) {
+                    # Tier 3: Offline Registry / WinPE Cleanup Fallback (Only if ForceOfflineRepair is explicitly enabled)
+                    if (-not $success -and $Global:ForceOfflineRepair) {
+                        Write-Host "  [~] Tier 3: Attempting Offline Registry Remediation (ForceOfflineRepair)..." -ForegroundColor Red
                         $regPaths = @(
                             "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$cleanTaskName",
                             "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\$guid"
@@ -1599,16 +2025,49 @@ function Invoke-CleanupEngine {
                                 } catch {}
                             }
                         }
+                        $success = $true
+                        Write-Host "  [+] Registry Task entries removed in offline/WinPE context." -ForegroundColor Green
+                        Write-GenLog "Offline direct registry task removal succeeded for: $cleanTaskName" "INFO"
+                    }
+
+                    # Tier 4: Failure & Manual Intervention
+                    if (-not $success) {
+                        Write-Host "  [x] CRITICAL FAILURE: Could not safely remove Scheduled Task." -ForegroundColor Red
+                        Write-Host "  [!] Direct TaskCache registry deletion is prohibited in online Windows sessions to prevent system database corruption." -ForegroundColor Yellow
+                        Write-Host "  [!] MANUAL INTERVENTION REQUIRED: Please use Task Scheduler (taskschd.msc) to remove task: $cleanTaskName" -ForegroundColor Yellow
+                        Write-GenLog "CRITICAL: Task removal failed for $cleanTaskName. Direct registry manipulation was blocked to preserve database integrity." "CRIT"
                     }
 
                     if ($success) {
-                        Write-Host "  [+] Scheduled Task Purged and Wiped Successfully." -ForegroundColor Green
-                        Write-GenLog "Successfully deleted scheduled task: $cleanTaskName" "INFO"
                         $cleanedCount++
-                    } else {
-                        Write-Host "  [-] Failed to purge task." -ForegroundColor Red
                     }
                     
+                } elseif ($threat.Forensics.Path -match "^Process:") {
+                    $pidToStop = $threat.Forensics.ProcessId
+                    $procName = $threat.Forensics.Name
+                    Write-Host "  [~] Trace: Initiating Safe Process Remediation for $procName (PID $pidToStop)..." -ForegroundColor DarkGray
+                    Write-GenLog "Evaluating safe process termination for PID $pidToStop ($procName)" "INFO"
+
+                    if (-not (Test-SafeToStopProcess -ProcessId $pidToStop)) {
+                        Write-Host "  [!] PROCESS TERMINATION BLOCKED: PID $pidToStop ($procName) is a critical/protected process or service." -ForegroundColor Yellow
+                        Write-GenLog "Termination blocked for protected/critical process: $procName (PID $pidToStop)" "WARN"
+                        continue
+                    }
+
+                    $confirmTerm = Read-Host "  [?] Are you sure you want to terminate process '$procName' (PID $pidToStop)? (Y/N)"
+                    if ($confirmTerm -match "^[Yy]") {
+                        try {
+                            Stop-Process -Id $pidToStop -Force -ErrorAction Stop
+                            Write-Host "  [+] Process $procName (PID $pidToStop) terminated successfully." -ForegroundColor Green
+                            Write-GenLog "Successfully terminated process $procName (PID $pidToStop)" "INFO"
+                            $cleanedCount++
+                        } catch {
+                            Write-Host "  [-] Failed to terminate process $procName: $($_.Exception.Message)" -ForegroundColor Red
+                            Write-GenLog "Failed to terminate process $procName (PID $pidToStop): $($_.Exception.Message)" "ERROR"
+                        }
+                    } else {
+                        Write-Host "  [!] Skipped process termination." -ForegroundColor DarkGray
+                    }
                 } else {
                     Write-Host "  [~] Trace: Targeting File System Payload..." -ForegroundColor DarkGray
                     
@@ -1623,9 +2082,15 @@ function Invoke-CleanupEngine {
                     Write-GenLog "Attempting to delete file threat: $($threat.Forensics.Path)" "INFO"
                     
                     $procName = [System.IO.Path]::GetFileNameWithoutExtension($threat.Forensics.Path)
-                    Write-Host "  [~] Trace: Terminating associated process [$procName]..." -ForegroundColor DarkGray
-                    Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
-                    
+                    $associatedProcs = Get-Process -Name $procName -ErrorAction SilentlyContinue
+                    foreach ($ap in $associatedProcs) {
+                        if (Test-SafeToStopProcess -ProcessId $ap.Id) {
+                            Write-Host "  [~] Trace: Terminating associated process [$procName] (PID $($ap.Id))..." -ForegroundColor DarkGray
+                            Stop-Process -Id $ap.Id -Force -ErrorAction SilentlyContinue
+                        } else {
+                            Write-Host "  [!] Associated process [$procName] (PID $($ap.Id)) is protected. Skipping termination." -ForegroundColor Yellow
+                        }
+                    }
                     
                     # Retry Loop for Locked Files
                     $success = $false
@@ -1634,8 +2099,12 @@ function Invoke-CleanupEngine {
                             Write-Host "  [~] Deletion Attempt $attempt of 3..." -ForegroundColor DarkGray
                             
                             # Force unlock file locks (Strip ReadOnly / Hidden / System)
-                            takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
-                            icacls.exe "`"$($threat.Forensics.Path)`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                            # NEVER run takeown or icacls on Microsoft-protected files unless absolutely required
+                            $isMSProtected = $threat.Forensics.IsMicrosoft -or ($threat.Forensics.Path -match "C:\\Windows\\System32" -or $threat.Forensics.Path -match "C:\\Windows\\SysWOW64")
+                            if (-not $isMSProtected) {
+                                takeown.exe /F "`"$($threat.Forensics.Path)`"" /A 2>&1 | Out-Null
+                                icacls.exe "`"$($threat.Forensics.Path)`"" /grant "Administrators:F" /C /Q 2>&1 | Out-Null
+                            }
                             
                             $f = Get-Item $threat.Forensics.Path -Force
                             $f.Attributes = 'Normal'
@@ -1646,8 +2115,12 @@ function Invoke-CleanupEngine {
                             break
                         } catch {
                             Write-Host "  [!] Attempt $attempt Failed: Access is Denied. Retrying and forcing close..." -ForegroundColor Yellow
-                            # Force stop process by name using command line taskkill as backup
-                            taskkill.exe /F /IM "$procName.exe" 2>&1 | Out-Null
+                            # Force stop process safely if not protected
+                            foreach ($ap in $associatedProcs) {
+                                if (Test-SafeToStopProcess -ProcessId $ap.Id) {
+                                    taskkill.exe /F /PID $ap.Id 2>&1 | Out-Null
+                                }
+                            }
                             Start-Sleep -Milliseconds 400
                         }
                     }
@@ -1925,7 +2398,7 @@ function Invoke-AdvancedDiagnostics {
 
 function Invoke-RestoreVault {
     Show-GenHeader
-    Write-Host "  [♻] QUARANTINE VAULT RESTORATION" -ForegroundColor Cyan
+    Write-Host "  [♻] QUARANTINE VAULT RESTORATION (ROLLBACK)" -ForegroundColor Cyan
     Write-Host "  =====================================================================" -ForegroundColor DarkGray
     
     $qFiles = Get-ChildItem -Path $Global:QuarantineDir -Filter "*.json" -ErrorAction SilentlyContinue
@@ -1959,9 +2432,38 @@ function Invoke-RestoreVault {
     
     if (Test-Path $virPath) {
         try {
-            Move-Item -Path $virPath -Destination $targetMeta.OriginalPath -Force -ErrorAction Stop
+            $parentDir = Split-Path $targetMeta.OriginalPath -Parent
+            if (-not (Test-Path $parentDir)) {
+                New-Item -Path $parentDir -ItemType Directory -Force | Out-Null
+            }
+
+            # Decrypt back to original path
+            $decrypted = Decrypt-FileAES -InFile $virPath -OutFile $targetMeta.OriginalPath -Password $Global:QuarantineKey
+            if (-not $decrypted) {
+                Write-Host "  [-] AES Decryption failed. Cannot restore payload." -ForegroundColor Red
+                return
+            }
+
+            # Restore Timestamps
+            $item = Get-Item $targetMeta.OriginalPath -Force
+            $item.CreationTime = [DateTime]::Parse($targetMeta.CreationTime)
+            $item.LastWriteTime = [DateTime]::Parse($targetMeta.LastWriteTime)
+            $item.LastAccessTime = [DateTime]::Parse($targetMeta.LastAccessTime)
+
+            # Restore ACL / Owner
+            if ($targetMeta.SDDL) {
+                try {
+                    $acl = Get-Acl -Path $targetMeta.OriginalPath
+                    $acl.SetSecurityDescriptorSddlForm($targetMeta.SDDL)
+                    Set-Acl -Path $targetMeta.OriginalPath -AclObject $acl -ErrorAction SilentlyContinue
+                } catch {}
+            }
+
+            # Cleanup vault files
+            Remove-Item -Path $virPath -Force
             Remove-Item -Path $qFiles[($rChoice -as [int]) - 1].FullName -Force
-            Write-Host "`n  [+] SUCCESS: File Restored to $($targetMeta.OriginalPath)" -ForegroundColor Green
+
+            Write-Host "`n  [+] SUCCESS: File successfully restored & rolled back to $($targetMeta.OriginalPath)" -ForegroundColor Green
             Write-GenLog "Restored $($targetMeta.VaultID) to $($targetMeta.OriginalPath) from Quarantine." "INFO"
         } catch {
             Write-Host "`n  [-] FAILED to restore file: $($_.Exception.Message)" -ForegroundColor Red
