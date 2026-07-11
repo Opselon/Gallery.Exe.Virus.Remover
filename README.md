@@ -46,9 +46,6 @@ This is the **most secure method** and guarantees the script can apply its stron
 
 For ultimate convenience, you can run Gallery-Lock directly from the web. Open a **SYSTEM-level PowerShell** (using the PsExec method above) and use one of the following commands.
 
-
-ولی برای یک ابزار امنیتی مثل **Gallery.Exe.Virus.Remover** نسخه حرفه‌ای‌تر پیشنهاد می‌کنم این باشد:
-
 > [!NOTE]
 > This command downloads and executes the latest `gallery_lock.ps1` script directly from the official GitHub repository.
 >
